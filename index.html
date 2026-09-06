@@ -17,7 +17,10 @@
   body{padding-bottom:70px;}
   header.top{position:sticky;top:0;z-index:10;background:var(--accent);color:#fff;
     padding:14px 16px 10px;}
-  header.top h1{margin:0 0 8px;font-size:18px;font-weight:700;}
+  header.top .top-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;}
+  header.top h1{margin:0;font-size:18px;font-weight:700;}
+  .btn.new-session{background:#fff;color:var(--accent);padding:7px 12px;font-size:13px;
+    border-radius:8px;font-weight:700;white-space:nowrap;flex:0 0 auto;}
   nav.tabs{display:flex;gap:6px;overflow-x:auto;}
   nav.tabs button{flex:0 0 auto;background:rgba(255,255,255,.15);border:none;color:#fff;
     padding:8px 12px;border-radius:8px;font-size:14px;font-weight:600;white-space:nowrap;}
@@ -54,6 +57,21 @@
   .pill.active{background:#e5f6ee;color:var(--good);}
   .pill.resting{background:#fff3e0;color:#b3720a;}
   .skill{color:var(--accent);font-weight:700;}
+  select.status-select{width:auto;min-width:96px;font-size:12px;padding:4px 6px;font-weight:700;}
+  select.status-active{color:var(--good);border-color:var(--good);}
+  select.status-not_arrived{color:var(--sub);}
+  select.status-resting{color:#b3720a;border-color:#e0a800;}
+  select.status-left{color:var(--bad);border-color:var(--bad);}
+  .modal-overlay{position:fixed;inset:0;background:rgba(20,30,50,.5);
+    display:flex;align-items:center;justify-content:center;z-index:50;padding:16px;}
+  .modal-overlay[hidden]{display:none;}
+  .modal-box{background:var(--card);border-radius:14px;padding:18px;max-width:480px;width:100%;
+    max-height:90vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,.3);}
+  .modal-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;}
+  .modal-head h2{margin:0;font-size:17px;}
+  .modal-close{background:none;border:none;font-size:20px;line-height:1;color:var(--sub);cursor:pointer;padding:2px 6px;}
+  .modal-foot{display:flex;gap:10px;margin-top:16px;}
+  .modal-foot .btn{flex:1;}
   .court{border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:10px;}
   .court h3{margin:0 0 8px;font-size:13px;color:var(--sub);display:flex;justify-content:space-between;align-items:center;}
   .teams{display:flex;align-items:center;gap:8px;}
@@ -78,10 +96,12 @@
 </head>
 <body>
 <header class="top">
-  <h1>🏸 羽球排場次</h1>
+  <div class="top-row">
+    <h1>🏸 羽球排場次</h1>
+    <button class="btn new-session" id="btn-open-modal">➕ 開新場</button>
+  </div>
   <nav class="tabs">
-    <button data-tab="players" class="active">球員</button>
-    <button data-tab="settings">場地設定</button>
+    <button data-tab="roster" class="active">球員與場地設定</button>
     <button data-tab="schedule">排場</button>
     <button data-tab="stats">記錄</button>
   </nav>
@@ -89,8 +109,8 @@
 
 <main>
 
-  <!-- 球員管理 -->
-  <section class="tab active" id="tab-players">
+  <!-- 球員與場地設定 -->
+  <section class="tab active" id="tab-roster">
     <div class="card">
       <h2>新增球員</h2>
       <div class="row">
@@ -127,18 +147,17 @@
         <label class="btn secondary small file-btn">匯入名單 (CSV)
           <input type="file" id="file-import" accept=".csv,.txt" style="display:none">
         </label>
+        <button class="btn secondary small" id="btn-mark-all-active">全部標記已報到</button>
       </div>
       <p class="muted">CSV 格式與批次新增相同（空白分隔：姓名 程度 搭檔），匯出/匯入僅包含姓名、程度、搭檔，不含上場紀錄與比分。</p>
+      <p class="muted">狀態說明：<b>已報到</b>＝在場可排入比賽；<b>未報到</b>＝還沒到場；<b>臨時休息</b>＝人在但暫不上場；<b>早退</b>＝提早離開，之後都不會被排入。</p>
       <table>
         <thead><tr><th>姓名</th><th>程度</th><th>搭檔</th><th>狀態</th><th>已上場</th><th></th></tr></thead>
         <tbody id="player-table-body"></tbody>
       </table>
       <div class="empty" id="player-empty" style="display:none">還沒有球員，先在上面新增吧。</div>
     </div>
-  </section>
 
-  <!-- 場地設定 -->
-  <section class="tab" id="tab-settings">
     <div class="card">
       <h2>場地與模式</h2>
       <div class="row">
@@ -151,13 +170,10 @@
         </div>
       </div>
       <p class="muted">每場需要 <b id="s-need"></b> 人，目前設定可同時開 <b id="s-courts-echo"></b> 場地，共需要 <b id="s-total"></b> 位在場球員。</p>
-      <button class="btn secondary" id="btn-save-settings">只儲存設定</button>
+      <p class="muted">場地中途要加開或減少，直接改這裡的數量再按儲存即可，不會影響目前已在進行的排場與紀錄。</p>
+      <button class="btn secondary" id="btn-save-settings">儲存場地設定</button>
     </div>
-    <div class="card host-card">
-      <h2>確定球員名單與場地數量後</h2>
-      <p class="muted">按下開場會套用上面的場地設定，並清空上次的上場次數／比分／歷史紀錄（球員名單、程度、搭檔都會保留），直接進入排場頁準備第一輪。</p>
-      <button class="btn host" id="btn-host-start">🏸 團主開場</button>
-    </div>
+
     <div class="card">
       <h2>說明</h2>
       <p class="muted">
@@ -179,7 +195,7 @@
       <div class="empty" id="schedule-empty">尚未產生本輪對戰，按「產生下一輪」開始。</div>
     </div>
     <div class="card">
-      <h2>候補 / 休息中</h2>
+      <h2>候補 / 未上場</h2>
       <div class="waiting-list" id="waiting-list"></div>
       <div class="empty" id="waiting-empty" style="display:none">目前沒有人候補。</div>
     </div>
@@ -205,6 +221,41 @@
   </section>
 
 </main>
+
+<div class="modal-overlay" id="modal-overlay" hidden>
+  <div class="modal-box">
+    <div class="modal-head">
+      <h2>🏸 開新場</h2>
+      <button class="modal-close" id="modal-close-btn" aria-label="關閉">✕</button>
+    </div>
+    <p class="muted">名單與場地都可以先不設定，開場後隨時可以到「球員與場地設定」頁增減人數或調整場地。</p>
+
+    <label>批次新增名單（選填）</label>
+    <textarea id="modal-bulk-text" rows="4" placeholder="王小明 3 陳小華&#10;陳小華 2 王小明&#10;林美美 5"></textarea>
+
+    <div class="row" style="margin-top:8px;">
+      <label class="btn secondary small file-btn">匯入名單 (CSV，選填)
+        <input type="file" id="modal-file-import" accept=".csv,.txt" style="display:none">
+      </label>
+      <span class="muted" id="modal-file-name"></span>
+    </div>
+
+    <div class="row" style="margin-top:14px;">
+      <div class="field"><label>場地數量</label><input type="number" id="modal-courts" min="1" max="20" value="2"></div>
+      <div class="field"><label>比賽模式</label>
+        <select id="modal-mode">
+          <option value="doubles" selected>雙打 (4人一場)</option>
+          <option value="singles">單打 (2人一場)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="modal-foot">
+      <button class="btn secondary" id="modal-cancel-btn">取消</button>
+      <button class="btn host" id="modal-start-btn">🏸 開場</button>
+    </div>
+  </div>
+</div>
 
 <div class="footer-note">資料僅儲存在此裝置的瀏覽器中（localStorage），請定期使用「匯出名單 (CSV)」保存。</div>
 
@@ -262,7 +313,7 @@
       document.getElementById("tab-"+btn.dataset.tab).classList.add("active");
       if(btn.dataset.tab === "stats") renderStats();
       if(btn.dataset.tab === "schedule") renderSchedule();
-      if(btn.dataset.tab === "settings") renderSettings();
+      if(btn.dataset.tab === "roster"){ renderPlayers(); renderSettings(); }
     });
   });
 
@@ -319,24 +370,31 @@
     });
   }
 
-  function makePlayer(name, skill){
+  function makePlayer(name, skill, status){
     return { id: uid(), name, skill, fixedPartnerId: null,
-      status: "active", gamesPlayed: 0, wins: 0, losses: 0, lastPlayedRound: 0 };
+      status: status || "active", gamesPlayed: 0, wins: 0, losses: 0, lastPlayedRound: 0 };
   }
 
-  document.getElementById("btn-bulk-add").addEventListener("click", ()=>{
-    const raw = document.getElementById("bulk-text").value;
-    const lines = raw.split(/\r?\n/).map(l=>l.trim()).filter(l=>l && !l.startsWith("#"));
-    if(!lines.length) return;
+  // parses multi-line roster text and appends players (used by both the
+  // page's batch-add box and the "開新場" modal's batch box / CSV import)
+  function addRosterFromText(text, defaultStatus){
+    const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(l=>l && !l.startsWith("#"));
     const added = [];
     lines.forEach(line=>{
       const parsed = parseRosterLine(line);
       if(!parsed) return;
-      const p = makePlayer(parsed.name, parsed.skill);
+      const p = makePlayer(parsed.name, parsed.skill, defaultStatus);
       state.players.push(p);
       added.push({ player:p, partnerName: parsed.partnerName });
     });
     linkPartnersByName(added);
+    return added;
+  }
+
+  document.getElementById("btn-bulk-add").addEventListener("click", ()=>{
+    const raw = document.getElementById("bulk-text").value;
+    if(!raw.trim()) return;
+    const added = addRosterFromText(raw, "active");
     document.getElementById("bulk-text").value = "";
     save();
     renderPlayers();
@@ -365,17 +423,10 @@
     reader.onload = ()=>{
       try{
         const lines = reader.result.split(/\r?\n/).map(l=>l.trim()).filter(l=>l && !l.startsWith("#"));
-        const rows = lines.map(parseRosterLine).filter(Boolean);
-        if(!rows.length) throw new Error("找不到任何球員資料");
+        if(!lines.length) throw new Error("找不到任何球員資料");
         if(!confirm("匯入將會取代目前的球員名單，並清除上場次數／比分／歷史紀錄，確定要繼續嗎？")) return;
         state.players = [];
-        const added = [];
-        rows.forEach(r=>{
-          const p = makePlayer(r.name, r.skill);
-          state.players.push(p);
-          added.push({ player:p, partnerName: r.partnerName });
-        });
-        linkPartnersByName(added);
+        const added = addRosterFromText(reader.result, "active");
         resetSessionState();
         save();
         renderPlayers(); renderSettings(); renderSchedule(); renderStats();
@@ -387,6 +438,14 @@
     reader.readAsText(file);
     e.target.value = "";
   });
+
+  document.getElementById("btn-mark-all-active").addEventListener("click", ()=>{
+    state.players.forEach(p=>{ if(p.status !== "removed") p.status = "active"; });
+    save();
+    renderPlayers();
+  });
+
+  const STATUS_LABEL = { active:"已報到", not_arrived:"未報到", resting:"臨時休息", left:"早退" };
 
   function renderPlayers(){
     refreshPartnerSelect();
@@ -402,18 +461,25 @@
         <td>${escapeHtml(p.name)}</td>
         <td><span class="skill">${p.skill}</span> <span class="muted">${SKILL_LABEL[p.skill]}</span></td>
         <td>${partner ? escapeHtml(partner.name) : '<span class="muted">—</span>'}</td>
-        <td><span class="pill ${p.status}">${p.status==='active'?'在場':'休息'}</span></td>
+        <td></td>
         <td>${p.gamesPlayed}</td>
         <td></td>
       `;
-      const actionsTd = tr.querySelector("td:last-child");
-      const toggleBtn = document.createElement("button");
-      toggleBtn.className = "btn secondary small";
-      toggleBtn.textContent = p.status === "active" ? "設休息" : "設在場";
-      toggleBtn.addEventListener("click", ()=>{
-        p.status = p.status === "active" ? "resting" : "active";
+      const statusTd = tr.children[3];
+      const statusSelect = document.createElement("select");
+      statusSelect.className = "status-select status-"+p.status;
+      Object.keys(STATUS_LABEL).forEach(key=>{
+        const opt = document.createElement("option");
+        opt.value = key; opt.textContent = STATUS_LABEL[key];
+        statusSelect.appendChild(opt);
+      });
+      statusSelect.value = p.status;
+      statusSelect.addEventListener("change", ()=>{
+        p.status = statusSelect.value;
         save(); renderPlayers();
       });
+      statusTd.appendChild(statusSelect);
+      const actionsTd = tr.querySelector("td:last-child");
       const delBtn = document.createElement("button");
       delBtn.className = "btn danger small";
       delBtn.textContent = "刪除";
@@ -427,7 +493,6 @@
         p.status = "removed";
         save(); renderPlayers();
       });
-      actionsTd.appendChild(toggleBtn);
       actionsTd.appendChild(delBtn);
       tbody.appendChild(tr);
     });
@@ -460,20 +525,62 @@
     alert("設定已儲存");
   });
 
-  document.getElementById("btn-host-start").addEventListener("click", ()=>{
-    if(!state.players.some(p=>p.status === "active")){
-      alert("目前沒有「在場」的球員，請先到球員頁新增球員。");
-      return;
-    }
-    if(state.roundNumber > 0 || state.history.length > 0){
-      if(!confirm("開場會清除目前的上場次數、比分與歷史紀錄（球員名單會保留），確定要開始新的一場嗎？")) return;
-    }
-    state.courts = Math.max(1, parseInt(document.getElementById("s-courts").value,10) || 1);
-    state.mode = document.getElementById("s-mode").value;
+  // ---------- 開新場 modal ----------
+  const modalOverlay = document.getElementById("modal-overlay");
+
+  function openModal(){
+    document.getElementById("modal-courts").value = state.courts;
+    document.getElementById("modal-mode").value = state.mode;
+    document.getElementById("modal-bulk-text").value = "";
+    document.getElementById("modal-file-import").value = "";
+    document.getElementById("modal-file-name").textContent = "";
+    modalOverlay.hidden = false;
+  }
+  function closeModal(){ modalOverlay.hidden = true; }
+
+  document.getElementById("btn-open-modal").addEventListener("click", openModal);
+  document.getElementById("modal-cancel-btn").addEventListener("click", closeModal);
+  document.getElementById("modal-close-btn").addEventListener("click", closeModal);
+  modalOverlay.addEventListener("click", (e)=>{ if(e.target === modalOverlay) closeModal(); });
+  document.addEventListener("keydown", (e)=>{
+    if(e.key === "Escape" && !modalOverlay.hidden) closeModal();
+  });
+  document.getElementById("modal-file-import").addEventListener("change", (e)=>{
+    const f = e.target.files[0];
+    document.getElementById("modal-file-name").textContent = f ? f.name : "";
+  });
+
+  function finishOpeningSession(){
+    const bulkText = document.getElementById("modal-bulk-text").value;
+    if(bulkText.trim()) addRosterFromText(bulkText, "not_arrived");
+    state.courts = Math.max(1, parseInt(document.getElementById("modal-courts").value,10) || 1);
+    state.mode = document.getElementById("modal-mode").value;
     resetSessionState();
     save();
     renderPlayers(); renderSettings(); renderStats();
+    closeModal();
     document.querySelector('nav.tabs button[data-tab="schedule"]').click();
+  }
+
+  document.getElementById("modal-start-btn").addEventListener("click", ()=>{
+    if(state.roundNumber > 0 || state.history.length > 0){
+      if(!confirm("開新場會清除目前的上場次數、比分與歷史紀錄（球員名單會保留），確定要開始新的一場嗎？")) return;
+    }
+    const file = document.getElementById("modal-file-import").files[0];
+    if(file){
+      const reader = new FileReader();
+      reader.onload = ()=>{
+        const lines = reader.result.split(/\r?\n/).map(l=>l.trim()).filter(l=>l && !l.startsWith("#"));
+        if(lines.length){
+          state.players = [];
+          addRosterFromText(reader.result, "not_arrived");
+        }
+        finishOpeningSession();
+      };
+      reader.readAsText(file);
+    } else {
+      finishOpeningSession();
+    }
   });
 
   // ---------- Scheduling algorithm ----------
@@ -799,16 +906,22 @@
   function renderWaitingList(){
     const wrap = document.getElementById("waiting-list");
     wrap.innerHTML = "";
-    const ids = state.currentMatches ? state.currentWaiting : state.players.filter(p=>p.status==='resting').map(p=>p.id);
-    const restingExtra = state.players.filter(p=>p.status==='resting' && !ids.includes(p.id)).map(p=>p.id);
-    const all = Array.from(new Set(ids.concat(restingExtra)));
-    document.getElementById("waiting-empty").style.display = all.length ? "none":"block";
-    all.forEach(id=>{
+    const entries = [];
+    if(state.currentMatches){
+      state.currentWaiting.forEach(id=>entries.push({ id, label:"候補" }));
+    }
+    state.players.forEach(p=>{
+      if(p.status === "not_arrived") entries.push({ id:p.id, label:"未報到" });
+      else if(p.status === "resting") entries.push({ id:p.id, label:"臨時休息" });
+      else if(p.status === "left") entries.push({ id:p.id, label:"早退" });
+    });
+    document.getElementById("waiting-empty").style.display = entries.length ? "none":"block";
+    entries.forEach(({id, label})=>{
       const p = playerById(id);
       if(!p) return;
       const chip = document.createElement("span");
       chip.className = "chip";
-      chip.textContent = p.name + (p.status==='resting' ? " (休息中)" : "");
+      chip.textContent = p.name + " ("+label+")";
       wrap.appendChild(chip);
     });
   }
