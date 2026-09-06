@@ -24,16 +24,42 @@
   <!-- 球員與場地設定 -->
   <section class="tab active" id="tab-roster">
     <div class="card">
+      <h2>球員名單 <span class="muted" id="player-count"></span></h2>
+      <div class="toolbar">
+        <button class="btn secondary small" id="btn-export">匯出名單 (CSV)</button>
+        <label class="btn secondary small file-btn">匯入名單 (CSV)
+          <input type="file" id="file-import" accept=".csv,.txt" style="display:none">
+        </label>
+        <button class="btn secondary small" id="btn-mark-all-active">全部標記已報到</button>
+      </div>
+      <p class="muted">CSV 格式：空白分隔「姓名 程度(1-12或12+) 搭檔」，匯出/匯入僅含姓名、程度、搭檔，不含上場紀錄與比分。</p>
+      <p class="muted">狀態操作：點一下「未報到／已報到」切換是否到場；「休息」「離場」是開關（亮＝啟用），啟用時該球員不會被排入對戰。</p>
+      <table>
+        <thead><tr><th>姓名</th><th>程度</th><th>搭檔</th><th>狀態</th><th>已上場數</th><th></th></tr></thead>
+        <tbody id="player-table-body"></tbody>
+      </table>
+      <div class="empty" id="player-empty" style="display:none">還沒有球員，先在下面新增吧。</div>
+    </div>
+
+    <div class="card">
       <h2>新增球員</h2>
       <div class="row">
         <div class="field"><label>姓名</label><input type="text" id="np-name" placeholder="王小明"></div>
-        <div class="field" style="max-width:110px"><label>程度 (1-5)</label>
+        <div class="field" style="max-width:110px"><label>程度</label>
           <select id="np-skill">
-            <option value="1">1 入門</option>
-            <option value="2">2 初階</option>
-            <option value="3" selected>3 中階</option>
-            <option value="4">4 中高階</option>
-            <option value="5">5 高階</option>
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+            <option value="6" selected>6</option>
+            <option value="7">7</option>
+            <option value="8">8</option>
+            <option value="9">9</option>
+            <option value="10">10</option>
+            <option value="11">11</option>
+            <option value="12">12</option>
+            <option value="13">12以上</option>
           </select>
         </div>
       </div>
@@ -45,29 +71,11 @@
 
     <div class="card">
       <h2>批次新增（貼上名單）</h2>
-      <p class="muted">一次貼上多位球員，每行一位，欄位用空白分開：<code>姓名 程度(1-5) 搭檔姓名(選填)</code></p>
-      <textarea id="bulk-text" rows="5" placeholder="王小明 3 陳小華&#10;陳小華 2 王小明&#10;林美美 5"></textarea>
+      <p class="muted">一次貼上多位球員，每行一位，欄位用空白分開：<code>姓名 程度(1-12或12+) 搭檔姓名(選填)</code></p>
+      <textarea id="bulk-text" rows="5" placeholder="王小明 6 陳小華&#10;陳小華 4 王小明&#10;林美美 12+"></textarea>
       <div class="row" style="margin-top:8px;">
         <button class="btn" id="btn-bulk-add">批次新增</button>
       </div>
-    </div>
-
-    <div class="card">
-      <h2>球員名單 <span class="muted" id="player-count"></span></h2>
-      <div class="toolbar">
-        <button class="btn secondary small" id="btn-export">匯出名單 (CSV)</button>
-        <label class="btn secondary small file-btn">匯入名單 (CSV)
-          <input type="file" id="file-import" accept=".csv,.txt" style="display:none">
-        </label>
-        <button class="btn secondary small" id="btn-mark-all-active">全部標記已報到</button>
-      </div>
-      <p class="muted">CSV 格式與批次新增相同（空白分隔：姓名 程度 搭檔），匯出/匯入僅包含姓名、程度、搭檔，不含上場紀錄與比分。</p>
-      <p class="muted">狀態說明：<b>已報到</b>＝在場可排入比賽；<b>未報到</b>＝還沒到場；<b>臨時休息</b>＝人在但暫不上場；<b>早退</b>＝提早離開，之後都不會被排入。</p>
-      <table>
-        <thead><tr><th>姓名</th><th>程度</th><th>搭檔</th><th>狀態</th><th>已上場</th><th></th></tr></thead>
-        <tbody id="player-table-body"></tbody>
-      </table>
-      <div class="empty" id="player-empty" style="display:none">還沒有球員，先在上面新增吧。</div>
     </div>
 
     <div class="card">
@@ -82,30 +90,23 @@
         </div>
       </div>
       <p class="muted">每場需要 <b id="s-need"></b> 人，目前設定可同時開 <b id="s-courts-echo"></b> 場地，共需要 <b id="s-total"></b> 位在場球員。</p>
-      <p class="muted">場地中途要加開或減少，直接改這裡的數量再按儲存即可，不會影響目前已在進行的排場與紀錄。</p>
+      <p class="muted">場地中途要加開或減少，直接改這裡的數量再按儲存即可：加開會立刻多一片空場地；減少時若該場地正在進行未紀錄比分的對戰，會先標記「最後一輪」，等比分確認後才會真正移除。</p>
+      <p class="muted" id="s-retiring-note" style="display:none"></p>
       <button class="btn secondary" id="btn-save-settings">儲存場地設定</button>
     </div>
 
     <div class="card">
       <h2>說明</h2>
       <p class="muted">
-        排場演算法會依「已上場次數」與「等待輪數」優先安排較少上場的人；同一組4人會依程度做平衡配對（強配弱 vs 中配中），
-        並盡量避免短期內重複遇到同一對手或搭檔。設定「固定搭檔」的兩人只要都在場，就一定會被排在同一隊。
+        每片場地各自獨立記錄輪數與對戰，「產生下一輪」「重排這一輪」按鈕都在各場地卡片內。產生對戰時可選擇全自動（依已上場次數、程度平衡、避免重複對手/搭檔自動配對）、
+        半自動（先手動選幾位一定要上場的人，其餘自動配）、或全手動（自己選人也自己分隊）。設定「固定搭檔」的兩人只要都在場，就一定會被排在同一隊。
       </p>
     </div>
   </section>
 
   <!-- 排場 -->
   <section class="tab" id="tab-schedule">
-    <div class="card">
-      <div class="toolbar">
-        <button class="btn" id="btn-generate">🔀 產生下一輪</button>
-        <button class="btn secondary" id="btn-regenerate">🎲 重新排這一輪</button>
-        <span class="muted" id="round-label"></span>
-      </div>
-      <div id="courts-container"></div>
-      <div class="empty" id="schedule-empty">尚未產生本輪對戰，按「產生下一輪」開始。</div>
-    </div>
+    <div id="courts-container"></div>
     <div class="card">
       <h2>候補 / 未上場</h2>
       <div class="waiting-list" id="waiting-list"></div>
@@ -143,7 +144,7 @@
     <p class="muted">名單與場地都可以先不設定，開場後隨時可以到「球員與場地設定」頁增減人數或調整場地。</p>
 
     <label>批次新增名單（選填）</label>
-    <textarea id="modal-bulk-text" rows="4" placeholder="王小明 3 陳小華&#10;陳小華 2 王小明&#10;林美美 5"></textarea>
+    <textarea id="modal-bulk-text" rows="4" placeholder="王小明 6 陳小華&#10;陳小華 4 王小明&#10;林美美 12+"></textarea>
 
     <div class="row" style="margin-top:8px;">
       <label class="btn secondary small file-btn">匯入名單 (CSV，選填)
