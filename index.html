@@ -82,14 +82,14 @@
       <h2>場地與模式</h2>
       <div class="row">
         <div class="field"><label>場地數量</label><input type="number" id="s-courts" min="1" max="20" value="2"></div>
-        <div class="field"><label>比賽模式</label>
+        <div class="field"><label>比賽模式 (預設)</label>
           <select id="s-mode">
             <option value="doubles" selected>雙打 (4人一場)</option>
             <option value="singles">單打 (2人一場)</option>
           </select>
         </div>
       </div>
-      <p class="muted">每場需要 <b id="s-need"></b> 人，目前設定可同時開 <b id="s-courts-echo"></b> 場地，共需要 <b id="s-total"></b> 位在場球員。</p>
+      <p class="muted">每場需要 <b id="s-need"></b> 人，目前設定可同時開 <b id="s-courts-echo"></b> 場地，共需要 <b id="s-total"></b> 位在場球員。此模式只是預設值，排場時每一輪仍可在該場地的產生對戰面板個別調整成單打或雙打。</p>
       <p class="muted">場地中途要加開或減少，直接改這裡的數量再按儲存即可：加開會立刻多一片空場地；減少時若該場地正在進行未紀錄比分的對戰，會先標記「最後一輪」，等比分確認後才會真正移除。</p>
       <p class="muted" id="s-retiring-note" style="display:none"></p>
       <button class="btn secondary" id="btn-save-settings">儲存場地設定</button>
@@ -98,8 +98,9 @@
     <div class="card">
       <h2>說明</h2>
       <p class="muted">
-        每片場地各自獨立記錄輪數與對戰，「產生下一輪」「重排這一輪」按鈕都在各場地卡片內。產生對戰時可選擇全自動（依已上場次數、程度平衡、避免重複對手/搭檔自動配對）、
-        半自動（先手動選幾位一定要上場的人，其餘自動配）、或全手動（自己選人也自己分隊）。設定「固定搭檔」的兩人只要都在場，就一定會被排在同一隊。
+        每片場地各自獨立記錄輪數與對戰，「產生下一輪」「重排這一輪」按鈕都在各場地卡片內。按下後，每位可上場的球員名字旁都有「隨機／左隊／右隊」三個按鈕：
+        留在「隨機」的人由系統依已上場次數、程度平衡、避免重複對手/搭檔自動決定要不要上場、上哪一隊；指定「左隊」或「右隊」的人一定會照指定上場，
+        其餘空位按下「確認產生」後自動補上——全部留隨機就是全自動，指定幾位就是半自動，指定滿整場就是全手動。設定「固定搭檔」的兩人只要都在場，就一定會被排在同一隊。
       </p>
     </div>
   </section>

@@ -22,7 +22,7 @@
   }
 
   let state = load();
-  let selectionUI = null; // { courtIndex, mode:'auto'|'semi'|'manual', picks:Set, teamAssign:Map, advanceRound }
+  let selectionUI = null; // { courtIndex, matchMode:'doubles'|'singles', teamOf:Map(id->'left'|'right'), advanceRound }
 
   function load(){
     try{
@@ -402,13 +402,13 @@
   });
 
   // ---------- Scheduling engine ----------
-  function buildUnits(pool){
+  function buildUnits(pool, matchMode){
     // group pool players into fixed-pair units (size 2, both must be in `pool`) or solo units (size 1)
     const seen = new Set();
     const units = [];
     pool.forEach(p=>{
       if(seen.has(p.id)) return;
-      const partner = (state.mode === "doubles" && p.fixedPartnerId) ? playerById(p.fixedPartnerId) : null;
+      const partner = (matchMode === "doubles" && p.fixedPartnerId) ? playerById(p.fixedPartnerId) : null;
       if(partner && pool.includes(partner) && !seen.has(partner.id)){
         units.push({ size:2, members:[p, partner] });
         seen.add(p.id); seen.add(partner.id);
@@ -424,29 +424,6 @@
     const gp = Math.min(...unit.members.map(m=>m.gamesPlayed));
     const waited = state.globalTick - Math.max(...unit.members.map(m=>m.lastPlayedTick));
     return gp * 1000 - waited; // fewer games played first; among ties, longer-waited first
-  }
-
-  function formTeamsForGroup(units){
-    // units: array of size-1/size-2 units totalling `need` members
-    const members = [].concat(...units.map(u=>u.members));
-    if(members.length === 2){
-      return { teamA:[members[0].id], teamB:[members[1].id] };
-    }
-    const pairUnits = units.filter(u=>u.size===2);
-    if(pairUnits.length === 2){
-      return { teamA: pairUnits[0].members.map(m=>m.id), teamB: pairUnits[1].members.map(m=>m.id) };
-    }
-    if(pairUnits.length === 1){
-      const pairIds = pairUnits[0].members.map(m=>m.id);
-      const solos = units.filter(u=>u.size===1).map(u=>u.members[0]);
-      return { teamA: pairIds, teamB: solos.map(m=>m.id) };
-    }
-    // 4 solos: balance by skill, snake pairing (strongest+weakest vs middle two)
-    const sorted = members.slice().sort((a,b)=> b.skill - a.skill);
-    return {
-      teamA: [sorted[0].id, sorted[3].id],
-      teamB: [sorted[1].id, sorted[2].id]
-    };
   }
 
   function repeatPenalty(matches){
@@ -471,37 +448,113 @@
     return penalty;
   }
 
-  // picks up to `need` members for ONE court, optionally forcing `forcedUnits` to be
-  // included (used by semi-auto mode); tries a few fairness-tiebreak shuffles and
-  // keeps whichever complete arrangement has the lowest repeat-opponent/partner penalty.
-  function pickUnitsForNeed(pool, need, forcedUnits){
-    forcedUnits = forcedUnits || [];
-    const forcedSize = forcedUnits.reduce((s,u)=>s+u.size,0);
-    const remainingNeed = need - forcedSize;
-    if(remainingNeed < 0) return null;
-    const forcedMemberIds = new Set(forcedUnits.flatMap(u=>u.members.map(m=>m.id)));
-    const restPool = pool.filter(p=>!forcedMemberIds.has(p.id));
-    const restUnits = buildUnits(restPool);
+  function teamPenalty(teamA, teamB){
+    let penalty = repeatPenalty([{teamA, teamB}]);
+    const skillA = teamA.reduce((s,id)=>s+playerById(id).skill, 0);
+    const skillB = teamB.reduce((s,id)=>s+playerById(id).skill, 0);
+    penalty += Math.abs(skillA - skillB) * 0.5; // soft preference for skill-balanced teams
+    return penalty;
+  }
 
+  // fills two same-court "bins" (left/right) of given capacity from `units` (size 1 or 2),
+  // preferring to place a size-2 unit whenever a bin still has room for both members.
+  // returns null if the units can't be split to hit both capacities exactly.
+  function packTwoSides(units, capLeft, capRight, leftFirst){
+    const pairs = units.filter(u=>u.size===2).slice();
+    const solos = units.filter(u=>u.size===1).slice();
+    function fillBin(cap){
+      const bin = [];
+      while(cap > 0){
+        if(cap >= 2 && pairs.length){ bin.push(pairs.shift()); cap -= 2; }
+        else if(solos.length){ bin.push(solos.shift()); cap -= 1; }
+        else return null;
+      }
+      return bin;
+    }
+    let left, right;
+    if(leftFirst){
+      left = fillBin(capLeft); if(left === null) return null;
+      right = fillBin(capRight); if(right === null) return null;
+    } else {
+      right = fillBin(capRight); if(right === null) return null;
+      left = fillBin(capLeft); if(left === null) return null;
+    }
+    if(pairs.length || solos.length) return null;
+    return { left, right };
+  }
+
+  // Builds one court's match from a per-player left/right/(random) assignment: players
+  // pinned to "left"/"right" (and their fixed partner, auto-pulled to the same side) are
+  // guaranteed a spot on that side; every remaining ("random") slot on either side is
+  // filled automatically from the rest of the eligible pool, balancing skill and avoiding
+  // recent repeat opponents/partners. Leaving everyone on "random" reproduces the old
+  // fully-automatic behavior; pinning everyone reproduces fully-manual.
+  function buildMatchFromSides(courtIndex, matchMode, teamOf){
+    const need = matchMode === "doubles" ? 4 : 2;
+    const halfNeed = need / 2;
+    const pool = eligiblePoolForCourt(courtIndex);
+    const poolIds = new Set(pool.map(p=>p.id));
+
+    const forcedLeft = new Set(), forcedRight = new Set();
+    pool.forEach(p=>{
+      const side = teamOf.get(p.id);
+      if(side === "left") forcedLeft.add(p.id);
+      else if(side === "right") forcedRight.add(p.id);
+    });
+
+    if(matchMode === "doubles"){
+      for(const p of pool){
+        if(!p.fixedPartnerId) continue;
+        const partner = playerById(p.fixedPartnerId);
+        if(!partner || !poolIds.has(partner.id)) continue;
+        const sideP = forcedLeft.has(p.id) ? "left" : forcedRight.has(p.id) ? "right" : null;
+        const sideQ = forcedLeft.has(partner.id) ? "left" : forcedRight.has(partner.id) ? "right" : null;
+        if(sideP && sideQ && sideP !== sideQ){
+          return { error: "固定搭檔「"+p.name+"」與「"+partner.name+"」被分到不同隊，請調整。" };
+        }
+        if(sideP && !sideQ) (sideP === "left" ? forcedLeft : forcedRight).add(partner.id);
+        if(sideQ && !sideP) (sideQ === "left" ? forcedLeft : forcedRight).add(p.id);
+      }
+    }
+
+    if(forcedLeft.size > halfNeed) return { error: "左隊最多 "+halfNeed+" 人，請調整。" };
+    if(forcedRight.size > halfNeed) return { error: "右隊最多 "+halfNeed+" 人，請調整。" };
+
+    const forcedLeftIds = [...forcedLeft];
+    const forcedRightIds = [...forcedRight];
+    const forcedIds = new Set(forcedLeftIds.concat(forcedRightIds));
+    const freePool = pool.filter(p=>!forcedIds.has(p.id));
+    const leftNeed = halfNeed - forcedLeft.size;
+    const rightNeed = halfNeed - forcedRight.size;
+    const totalFillNeed = leftNeed + rightNeed;
+
+    if(totalFillNeed === 0){
+      return { teamA: forcedLeftIds, teamB: forcedRightIds };
+    }
+
+    const freeUnits = buildUnits(freePool, matchMode);
     let best = null, bestPenalty = Infinity;
-    const attempts = remainingNeed === 0 ? 1 : 40;
+    const attempts = 50;
     for(let i=0;i<attempts;i++){
-      const shuffled = restUnits.slice().sort((a,b)=> fairnessScore(a)-fairnessScore(b) || (Math.random()-0.5));
-      let remaining = remainingNeed;
+      const shuffled = freeUnits.slice().sort((a,b)=> fairnessScore(a)-fairnessScore(b) || (Math.random()-0.5));
+      let remaining = totalFillNeed;
       const filled = [];
       shuffled.forEach(u=>{
         if(u.size <= remaining){ filled.push(u); remaining -= u.size; }
       });
       if(remaining !== 0) continue;
-      const combined = forcedUnits.concat(filled);
-      const teams = formTeamsForGroup(combined);
-      const penalty = repeatPenalty([teams]);
+      const split = packTwoSides(filled, leftNeed, rightNeed, Math.random() < 0.5);
+      if(!split) continue;
+      const teamA = forcedLeftIds.concat(split.left.flatMap(u=>u.members.map(m=>m.id)));
+      const teamB = forcedRightIds.concat(split.right.flatMap(u=>u.members.map(m=>m.id)));
+      const penalty = teamPenalty(teamA, teamB);
       if(penalty < bestPenalty){
         bestPenalty = penalty;
-        best = { units: combined, teams };
+        best = { teamA, teamB };
         if(penalty === 0) break;
       }
     }
+    if(!best) return { error: "目前可上場人數不足或湊不出這一場，請調整名單或分隊。" };
     return best;
   }
 
@@ -605,13 +658,13 @@
     renderPlayers();
   }
 
-  // ---------- Manual / semi-auto / auto generation UI ----------
+  // ---------- Generation UI: pick specific players to a side, rest auto-fills ----------
   function startGeneration(courtIndex, advanceRound){
     const court = state.courts[courtIndex];
     if(court.currentMatch && !court.currentMatch.done){
       if(!confirm("這場還沒有確認比分，確定要重新產生對戰嗎？")) return;
     }
-    selectionUI = { courtIndex, mode:"auto", picks:new Set(), teamAssign:new Map(), advanceRound };
+    selectionUI = { courtIndex, matchMode: state.mode, teamOf: new Map(), advanceRound };
     renderSchedule();
   }
 
@@ -621,34 +674,10 @@
   }
 
   function confirmGeneration(){
-    const { courtIndex, mode, picks, teamAssign, advanceRound } = selectionUI;
-    const need = state.mode === "doubles" ? 4 : 2;
-    const pool = eligiblePoolForCourt(courtIndex);
-    let teamA, teamB;
-
-    if(mode === "manual"){
-      const idsA = [...picks].filter(id=>teamAssign.get(id) === 'A');
-      const idsB = [...picks].filter(id=>teamAssign.get(id) === 'B');
-      if(idsA.length + idsB.length !== need || idsA.length !== need/2){
-        alert("請選滿 "+need+" 人，並確認兩隊人數平均（各 "+(need/2)+" 人）。");
-        return;
-      }
-      teamA = idsA; teamB = idsB;
-    } else {
-      let forcedUnits = [];
-      if(mode === "semi" && picks.size){
-        const forcedPool = pool.filter(p=> picks.has(p.id) || (p.fixedPartnerId && picks.has(p.fixedPartnerId)));
-        forcedUnits = buildUnits(forcedPool);
-      }
-      const result = pickUnitsForNeed(pool, need, forcedUnits);
-      if(!result){
-        alert("目前可上場人數不足或湊不出這一場，請調整名單或改用半自動／全手動指定。");
-        return;
-      }
-      teamA = result.teams.teamA; teamB = result.teams.teamB;
-    }
-
-    applyMatchToCourt(courtIndex, teamA, teamB, advanceRound);
+    const { courtIndex, matchMode, teamOf, advanceRound } = selectionUI;
+    const result = buildMatchFromSides(courtIndex, matchMode, teamOf);
+    if(result.error){ alert(result.error); return; }
+    applyMatchToCourt(courtIndex, result.teamA, result.teamB, advanceRound);
     selectionUI = null;
     renderSchedule();
     renderPlayers();
@@ -707,83 +736,77 @@
   }
 
   function renderGenerationPanel(courtIndex){
-    const need = state.mode === "doubles" ? 4 : 2;
+    const halfNeed = (selectionUI.matchMode === "doubles" ? 4 : 2) / 2;
     const pool = eligiblePoolForCourt(courtIndex).slice()
       .sort((a,b)=> fairnessScore({members:[a]}) - fairnessScore({members:[b]}));
     const panel = document.createElement("div");
     panel.className = "gen-panel";
 
-    const modeRow = document.createElement("div");
-    modeRow.className = "mode-select";
-    [["auto","全自動"],["semi","半自動"],["manual","全手動"]].forEach(([val,label])=>{
-      const lbl = document.createElement("label");
-      const radio = document.createElement("input");
-      radio.type = "radio"; radio.name = "gen-mode-"+courtIndex; radio.value = val;
-      radio.checked = selectionUI.mode === val;
-      radio.addEventListener("change", ()=>{ selectionUI.mode = val; renderSchedule(); });
-      lbl.appendChild(radio);
-      lbl.append(" "+label);
-      modeRow.appendChild(lbl);
+    // per-round match-mode override; defaults to the global setting but can change per round
+    const modeField = document.createElement("div");
+    modeField.className = "field";
+    modeField.style.marginBottom = "10px";
+    const modeLabel = document.createElement("label");
+    modeLabel.textContent = "本輪模式（預設："+(state.mode === "doubles" ? "雙打" : "單打")+"）";
+    const modeSelect = document.createElement("select");
+    [["doubles","雙打 (4人一場)"],["singles","單打 (2人一場)"]].forEach(([val,label])=>{
+      const opt = document.createElement("option");
+      opt.value = val; opt.textContent = label;
+      if(selectionUI.matchMode === val) opt.selected = true;
+      modeSelect.appendChild(opt);
     });
-    panel.appendChild(modeRow);
+    modeSelect.addEventListener("change", ()=>{
+      selectionUI.matchMode = modeSelect.value;
+      selectionUI.teamOf.clear();
+      renderSchedule();
+    });
+    modeField.appendChild(modeLabel);
+    modeField.appendChild(modeSelect);
+    panel.appendChild(modeField);
 
-    if(selectionUI.mode !== "auto"){
-      const list = document.createElement("div");
-      list.className = "pick-list";
-      if(!pool.length){
-        list.innerHTML = '<div class="muted">目前沒有可選的球員（需已報到、未休息／離場，且不在其他場地上）。</div>';
-      }
-      pool.forEach(p=>{
-        const row = document.createElement("div");
-        row.className = "pick-row";
-        const cb = document.createElement("input");
-        cb.type = "checkbox";
-        cb.checked = selectionUI.picks.has(p.id);
-        cb.addEventListener("change", ()=>{
-          if(cb.checked){
-            if(selectionUI.picks.size >= need){
-              cb.checked = false;
-              alert("最多只能選 "+need+" 人");
-              return;
-            }
-            selectionUI.picks.add(p.id);
-            if(selectionUI.mode === "manual"){
-              const countA = [...selectionUI.picks].filter(id=>selectionUI.teamAssign.get(id) === 'A').length;
-              selectionUI.teamAssign.set(p.id, countA < need/2 ? 'A' : 'B');
-            }
-          } else {
-            selectionUI.picks.delete(p.id);
-            selectionUI.teamAssign.delete(p.id);
-          }
+    const list = document.createElement("div");
+    list.className = "pick-list";
+    if(!pool.length){
+      list.innerHTML = '<div class="muted">目前沒有可選的球員（需已報到、未休息／離場，且不在其他場地上）。</div>';
+    }
+    pool.forEach(p=>{
+      const row = document.createElement("div");
+      row.className = "pick-row";
+      const info = document.createElement("span");
+      info.className = "info";
+      info.textContent = p.name+" "+skillDisplay(p.skill)+" · 已上場"+p.gamesPlayed+"次";
+      row.appendChild(info);
+      const toggle = document.createElement("div");
+      toggle.className = "team-toggle";
+      const current = selectionUI.teamOf.get(p.id) || "random";
+      [["random","隨機"],["left","左隊"],["right","右隊"]].forEach(([val,label])=>{
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = label;
+        if(current === val) b.classList.add("active");
+        b.addEventListener("click", ()=>{
+          if(val === "random") selectionUI.teamOf.delete(p.id);
+          else selectionUI.teamOf.set(p.id, val);
           renderSchedule();
         });
-        const info = document.createElement("span");
-        info.className = "info";
-        info.textContent = p.name+" "+skillDisplay(p.skill)+" · 已上場"+p.gamesPlayed+"次";
-        row.appendChild(cb);
-        row.appendChild(info);
-        if(selectionUI.mode === "manual" && selectionUI.picks.has(p.id)){
-          const toggle = document.createElement("div");
-          toggle.className = "team-toggle";
-          ["A","B"].forEach(side=>{
-            const b = document.createElement("button");
-            b.type = "button";
-            b.textContent = "隊"+side;
-            if(selectionUI.teamAssign.get(p.id) === side) b.classList.add("active");
-            b.addEventListener("click", ()=>{ selectionUI.teamAssign.set(p.id, side); renderSchedule(); });
-            toggle.appendChild(b);
-          });
-          row.appendChild(toggle);
-        }
-        list.appendChild(row);
+        toggle.appendChild(b);
       });
-      panel.appendChild(list);
-      const countInfo = document.createElement("div");
-      countInfo.className = "muted";
-      countInfo.style.marginBottom = "8px";
-      countInfo.textContent = "已選 "+selectionUI.picks.size+" / "+need+" 人";
-      panel.appendChild(countInfo);
-    }
+      row.appendChild(toggle);
+      list.appendChild(row);
+    });
+    panel.appendChild(list);
+
+    let leftCount = 0, rightCount = 0;
+    pool.forEach(p=>{
+      const side = selectionUI.teamOf.get(p.id);
+      if(side === "left") leftCount++;
+      else if(side === "right") rightCount++;
+    });
+    const countInfo = document.createElement("div");
+    countInfo.className = "muted";
+    countInfo.style.marginBottom = "8px";
+    countInfo.textContent = "左隊已指定 "+leftCount+"/"+halfNeed+"　右隊已指定 "+rightCount+"/"+halfNeed+"　其餘按「確認產生」後自動補上";
+    panel.appendChild(countInfo);
 
     const actionRow = document.createElement("div");
     actionRow.className = "row";
