@@ -31,9 +31,10 @@
   .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
   .row + .row{margin-top:8px;}
   label{font-size:12px;color:var(--sub);display:block;margin-bottom:3px;}
-  input[type=text],input[type=number],select{
+  input[type=text],input[type=number],select,textarea{
     border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:14px;
-    background:#fff;color:var(--ink);width:100%;}
+    background:#fff;color:var(--ink);width:100%;font-family:inherit;}
+  textarea{resize:vertical;line-height:1.5;}
   .field{flex:1;min-width:110px;}
   .btn{border:none;border-radius:8px;padding:9px 14px;font-size:14px;font-weight:600;
     background:var(--accent);color:#fff;cursor:pointer;}
@@ -41,6 +42,11 @@
   .btn.danger{background:#fdeceb;color:var(--bad);}
   .btn.small{padding:5px 9px;font-size:12px;border-radius:6px;}
   .btn:disabled{opacity:.45;}
+  .btn.host{display:block;width:100%;font-size:17px;padding:14px 20px;
+    background:linear-gradient(135deg,var(--accent),#1550c9);
+    box-shadow:0 4px 12px rgba(47,111,237,.35);}
+  .host-card{text-align:center;border:2px solid var(--accent);}
+  code{background:#eef1f6;border-radius:4px;padding:1px 5px;font-size:12px;}
   table{width:100%;border-collapse:collapse;font-size:13px;}
   th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line);}
   th{color:var(--sub);font-weight:600;font-size:12px;}
@@ -106,13 +112,23 @@
     </div>
 
     <div class="card">
+      <h2>批次新增（貼上名單）</h2>
+      <p class="muted">一次貼上多位球員，每行一位，欄位用空白分開：<code>姓名 程度(1-5) 搭檔姓名(選填)</code></p>
+      <textarea id="bulk-text" rows="5" placeholder="王小明 3 陳小華&#10;陳小華 2 王小明&#10;林美美 5"></textarea>
+      <div class="row" style="margin-top:8px;">
+        <button class="btn" id="btn-bulk-add">批次新增</button>
+      </div>
+    </div>
+
+    <div class="card">
       <h2>球員名單 <span class="muted" id="player-count"></span></h2>
       <div class="toolbar">
-        <button class="btn secondary small" id="btn-export">匯出備份 (JSON)</button>
-        <label class="btn secondary small file-btn">匯入備份
-          <input type="file" id="file-import" accept=".json" style="display:none">
+        <button class="btn secondary small" id="btn-export">匯出名單 (CSV)</button>
+        <label class="btn secondary small file-btn">匯入名單 (CSV)
+          <input type="file" id="file-import" accept=".csv,.txt" style="display:none">
         </label>
       </div>
+      <p class="muted">CSV 格式與批次新增相同（空白分隔：姓名 程度 搭檔），匯出/匯入僅包含姓名、程度、搭檔，不含上場紀錄與比分。</p>
       <table>
         <thead><tr><th>姓名</th><th>程度</th><th>搭檔</th><th>狀態</th><th>已上場</th><th></th></tr></thead>
         <tbody id="player-table-body"></tbody>
@@ -135,7 +151,12 @@
         </div>
       </div>
       <p class="muted">每場需要 <b id="s-need"></b> 人，目前設定可同時開 <b id="s-courts-echo"></b> 場地，共需要 <b id="s-total"></b> 位在場球員。</p>
-      <button class="btn" id="btn-save-settings">儲存設定</button>
+      <button class="btn secondary" id="btn-save-settings">只儲存設定</button>
+    </div>
+    <div class="card host-card">
+      <h2>確定球員名單與場地數量後</h2>
+      <p class="muted">按下開場會套用上面的場地設定，並清空上次的上場次數／比分／歷史紀錄（球員名單、程度、搭檔都會保留），直接進入排場頁準備第一輪。</p>
+      <button class="btn host" id="btn-host-start">🏸 團主開場</button>
     </div>
     <div class="card">
       <h2>說明</h2>
@@ -185,7 +206,7 @@
 
 </main>
 
-<div class="footer-note">資料僅儲存在此裝置的瀏覽器中（localStorage），請定期使用「匯出備份」保存。</div>
+<div class="footer-note">資料僅儲存在此裝置的瀏覽器中（localStorage），請定期使用「匯出名單 (CSV)」保存。</div>
 
 <script>
 (function(){
@@ -264,10 +285,8 @@
     if(!name){ nameEl.focus(); return; }
     const skill = parseInt(document.getElementById("np-skill").value, 10);
     const partnerId = document.getElementById("np-partner").value || null;
-    const p = {
-      id: uid(), name, skill, fixedPartnerId: partnerId,
-      status: "active", gamesPlayed: 0, wins: 0, losses: 0, lastPlayedRound: 0
-    };
+    const p = makePlayer(name, skill);
+    p.fixedPartnerId = partnerId;
     state.players.push(p);
     if(partnerId){
       const partner = playerById(partnerId);
@@ -278,12 +297,63 @@
     renderPlayers();
   });
 
+  // ---------- Roster CSV (space-delimited): 姓名 程度 搭檔 ----------
+  function parseRosterLine(line){
+    const parts = line.trim().split(/\s+/);
+    if(!parts.length || !parts[0]) return null;
+    const name = parts[0];
+    let skill = 3;
+    if(parts[1] && /^[1-5]$/.test(parts[1])) skill = parseInt(parts[1], 10);
+    const partnerName = parts.slice(2).join(" ");
+    return { name, skill, partnerName: (partnerName && partnerName !== "-") ? partnerName : "" };
+  }
+
+  function linkPartnersByName(added){
+    added.forEach(({player, partnerName})=>{
+      if(!partnerName || player.fixedPartnerId) return;
+      const partner = state.players.find(q=>q.name === partnerName && q.id !== player.id && q.status !== "removed");
+      if(partner && !partner.fixedPartnerId){
+        player.fixedPartnerId = partner.id;
+        partner.fixedPartnerId = player.id;
+      }
+    });
+  }
+
+  function makePlayer(name, skill){
+    return { id: uid(), name, skill, fixedPartnerId: null,
+      status: "active", gamesPlayed: 0, wins: 0, losses: 0, lastPlayedRound: 0 };
+  }
+
+  document.getElementById("btn-bulk-add").addEventListener("click", ()=>{
+    const raw = document.getElementById("bulk-text").value;
+    const lines = raw.split(/\r?\n/).map(l=>l.trim()).filter(l=>l && !l.startsWith("#"));
+    if(!lines.length) return;
+    const added = [];
+    lines.forEach(line=>{
+      const parsed = parseRosterLine(line);
+      if(!parsed) return;
+      const p = makePlayer(parsed.name, parsed.skill);
+      state.players.push(p);
+      added.push({ player:p, partnerName: parsed.partnerName });
+    });
+    linkPartnersByName(added);
+    document.getElementById("bulk-text").value = "";
+    save();
+    renderPlayers();
+    alert("已新增 "+added.length+" 位球員");
+  });
+
   document.getElementById("btn-export").addEventListener("click", ()=>{
-    const blob = new Blob([JSON.stringify(state, null, 2)], {type:"application/json"});
+    const lines = ["# 姓名 程度 搭檔"];
+    state.players.filter(p=>p.status !== "removed").forEach(p=>{
+      const partner = p.fixedPartnerId ? playerById(p.fixedPartnerId) : null;
+      lines.push([p.name, p.skill, partner ? partner.name : "-"].join(" "));
+    });
+    const blob = new Blob([lines.join("\n")], {type:"text/csv"});
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     const stamp = new Date().toISOString().slice(0,10);
-    a.href = url; a.download = "badminton-backup-"+stamp+".json";
+    a.href = url; a.download = "players-"+stamp+".csv";
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
   });
@@ -294,12 +364,22 @@
     const reader = new FileReader();
     reader.onload = ()=>{
       try{
-        const parsed = JSON.parse(reader.result);
-        if(!Array.isArray(parsed.players)) throw new Error("格式不正確");
-        state = Object.assign(defaultState(), parsed);
+        const lines = reader.result.split(/\r?\n/).map(l=>l.trim()).filter(l=>l && !l.startsWith("#"));
+        const rows = lines.map(parseRosterLine).filter(Boolean);
+        if(!rows.length) throw new Error("找不到任何球員資料");
+        if(!confirm("匯入將會取代目前的球員名單，並清除上場次數／比分／歷史紀錄，確定要繼續嗎？")) return;
+        state.players = [];
+        const added = [];
+        rows.forEach(r=>{
+          const p = makePlayer(r.name, r.skill);
+          state.players.push(p);
+          added.push({ player:p, partnerName: r.partnerName });
+        });
+        linkPartnersByName(added);
+        resetSessionState();
         save();
         renderPlayers(); renderSettings(); renderSchedule(); renderStats();
-        alert("匯入成功");
+        alert("匯入成功，共 "+added.length+" 位球員");
       }catch(err){
         alert("匯入失敗：" + err.message);
       }
@@ -378,6 +458,22 @@
     state.mode = document.getElementById("s-mode").value;
     save();
     alert("設定已儲存");
+  });
+
+  document.getElementById("btn-host-start").addEventListener("click", ()=>{
+    if(!state.players.some(p=>p.status === "active")){
+      alert("目前沒有「在場」的球員，請先到球員頁新增球員。");
+      return;
+    }
+    if(state.roundNumber > 0 || state.history.length > 0){
+      if(!confirm("開場會清除目前的上場次數、比分與歷史紀錄（球員名單會保留），確定要開始新的一場嗎？")) return;
+    }
+    state.courts = Math.max(1, parseInt(document.getElementById("s-courts").value,10) || 1);
+    state.mode = document.getElementById("s-mode").value;
+    resetSessionState();
+    save();
+    renderPlayers(); renderSettings(); renderStats();
+    document.querySelector('nav.tabs button[data-tab="schedule"]').click();
   });
 
   // ---------- Scheduling algorithm ----------
@@ -755,8 +851,7 @@
     });
   }
 
-  document.getElementById("btn-reset-stats").addEventListener("click", ()=>{
-    if(!confirm("確定要清除所有上場次數、勝負與歷史紀錄嗎？球員名單會保留。")) return;
+  function resetSessionState(){
     state.players.forEach(p=>{ p.gamesPlayed=0; p.wins=0; p.losses=0; p.lastPlayedRound=0; });
     state.roundNumber = 0;
     state.currentMatches = null;
@@ -764,6 +859,11 @@
     state.pairHistory = {};
     state.oppHistory = {};
     state.history = [];
+  }
+
+  document.getElementById("btn-reset-stats").addEventListener("click", ()=>{
+    if(!confirm("確定要清除所有上場次數、勝負與歷史紀錄嗎？球員名單會保留。")) return;
+    resetSessionState();
     save();
     renderPlayers(); renderSchedule(); renderStats();
   });
