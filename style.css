@@ -42,9 +42,12 @@ textarea{resize:vertical;line-height:1.5;}
   background:linear-gradient(135deg,var(--accent),#1550c9);
   box-shadow:0 4px 12px rgba(47,111,237,.35);}
 code{background:#eef1f6;border-radius:4px;padding:1px 5px;font-size:12px;}
+.table-scroll{overflow-x:auto;}
 table{width:100%;border-collapse:collapse;font-size:13px;}
 th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line);}
 th{color:var(--sub);font-weight:600;font-size:12px;}
+tfoot td{border-bottom:none;padding-top:10px;min-width:100px;}
+tfoot input,tfoot select{font-size:13px;padding:6px 8px;}
 .skill{color:var(--accent);font-weight:700;}
 
 .status-btns{display:flex;gap:4px;flex-wrap:wrap;}
@@ -69,6 +72,9 @@ th{color:var(--sub);font-weight:600;font-size:12px;}
 .court.card{margin-bottom:12px;}
 .court.retiring{border:2px solid var(--bad);}
 .court h3{margin:0 0 8px;font-size:13px;color:var(--sub);display:flex;justify-content:space-between;align-items:center;}
+.court-head{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;font-size:13px;}
+.court-head .btn{margin-left:auto;}
+.court-number-input{width:56px;flex:0 0 auto;padding:4px 6px;font-size:14px;font-weight:700;text-align:center;}
 .badge-retiring{background:var(--bad);color:#fff;font-size:10px;font-weight:700;
   padding:2px 7px;border-radius:6px;margin-left:6px;}
 .teams{display:flex;align-items:center;gap:8px;}

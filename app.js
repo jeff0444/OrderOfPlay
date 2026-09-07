@@ -1,19 +1,30 @@
 (function(){
   "use strict";
-  const STORAGE_KEY = "badminton_scheduler_state_v2";
+
+  // Skill/level ranges per sport. Edit here to add a sport or change a range.
+  const SPORT_CONFIGS = {
+    badminton:  { label: "羽球",   min: 3,   max: 12,  step: 1 },
+    pickleball: { label: "匹克球", min: 1.0, max: 5.0, step: 0.5 },
+    tennis:     { label: "網球",   min: 1.0, max: 7.0, step: 0.5 }
+  };
+  const DEFAULT_SPORT = "badminton";
+
+  const STORAGE_KEY = "badminton_scheduler_state_v3";
 
   function uid(){ return Math.random().toString(36).slice(2,10) + Date.now().toString(36); }
 
-  function makeCourt(){
-    return { id: uid(), roundNumber: 0, currentMatch: null, retiring: false };
+  function makeCourt(number){
+    return { id: uid(), number: String(number), currentMatch: null, retiring: false, roundNumber: 0 };
   }
 
   function defaultState(){
     return {
       players: [],       // {id,name,skill,fixedPartnerId,checkedIn,resting,left,removed,gamesPlayed,wins,losses,lastPlayedTick}
-      courtCount: 2,
-      mode: "doubles",   // doubles | singles
-      courts: [makeCourt(), makeCourt()],
+      sport: DEFAULT_SPORT,
+      mode: "doubles",   // doubles | singles — last-used default for building a match
+      courts: [makeCourt(1), makeCourt(2)],
+      nextCourtNumber: 3,
+      pending: [],        // queued-but-unassigned matches: {id, matchMode, teamA, teamB}
       globalTick: 0,
       pairHistory: {},   // "id1|id2" (sorted) -> times partnered
       oppHistory: {},    // "id1|id2" (sorted) -> times opposed
@@ -22,14 +33,16 @@
   }
 
   let state = load();
-  let selectionUI = null; // { courtIndex, matchMode:'doubles'|'singles', teamOf:Map(id->'left'|'right'), advanceRound }
+  let genUI = null;    // { matchMode:'doubles'|'singles', teamOf:Map(id->'left'|'right') } while building a pending match
 
   function load(){
     try{
       const raw = localStorage.getItem(STORAGE_KEY);
       if(!raw) return defaultState();
       const parsed = JSON.parse(raw);
-      return Object.assign(defaultState(), parsed);
+      const merged = Object.assign(defaultState(), parsed);
+      if(!SPORT_CONFIGS[merged.sport]) merged.sport = DEFAULT_SPORT;
+      return merged;
     }catch(e){
       console.error("load failed", e);
       return defaultState();
@@ -39,14 +52,29 @@
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   }
 
+  function sportConfig(){ return SPORT_CONFIGS[state.sport]; }
+
+  function clampSkill(v){
+    const cfg = sportConfig();
+    if(v > cfg.max) v = cfg.max;
+    if(v < cfg.min) v = cfg.min;
+    return Math.round(v * 100) / 100;
+  }
+  function defaultSkill(){
+    const cfg = sportConfig();
+    return clampSkill(Math.round(((cfg.min + cfg.max) / 2) / cfg.step) * cfg.step);
+  }
+  function formatSkillNumber(v){
+    return Number.isInteger(v) ? String(v) : v.toFixed(1);
+  }
+  function skillDisplay(skill){ return "Lv"+formatSkillNumber(skill); }
+  function skillCell(skill){ return formatSkillNumber(skill); }
+
   function eligiblePlayers(){
     return state.players.filter(p => !p.removed && p.checkedIn && !p.resting && !p.left);
   }
   function playerById(id){ return state.players.find(p => p.id === id); }
   function pairKey(a,b){ return [a,b].sort().join("|"); }
-
-  function skillDisplay(skill){ return skill >= 13 ? "12以上" : ("Lv"+skill); }
-  function skillCell(skill){ return skill >= 13 ? "12以上" : String(skill); }
 
   // ---------- Tabs ----------
   document.querySelectorAll("nav.tabs button").forEach(btn=>{
@@ -57,13 +85,14 @@
       document.getElementById("tab-"+btn.dataset.tab).classList.add("active");
       if(btn.dataset.tab === "stats") renderStats();
       if(btn.dataset.tab === "schedule") renderSchedule();
-      if(btn.dataset.tab === "roster"){ renderPlayers(); renderSettings(); }
+      if(btn.dataset.tab === "roster") renderPlayers();
     });
   });
 
   // ---------- Players tab ----------
   function refreshPartnerSelect(){
     const sel = document.getElementById("np-partner");
+    const prev = sel.value;
     sel.innerHTML = '<option value="">— 無 —</option>';
     state.players.forEach(p=>{
       if(p.removed) return;
@@ -72,10 +101,19 @@
       opt.textContent = p.name;
       sel.appendChild(opt);
     });
+    if([...sel.options].some(o=>o.value === prev)) sel.value = prev;
+  }
+
+  function applySkillInputBounds(resetValue){
+    const cfg = sportConfig();
+    const el = document.getElementById("np-skill");
+    if(!el) return;
+    el.min = cfg.min; el.max = cfg.max; el.step = cfg.step;
+    if(resetValue) el.value = defaultSkill();
   }
 
   function makePlayer(name, skill, checkedIn){
-    return { id: uid(), name, skill, fixedPartnerId: null,
+    return { id: uid(), name, skill: clampSkill(skill), fixedPartnerId: null,
       checkedIn: !!checkedIn, resting: false, left: false, removed: false,
       gamesPlayed: 0, wins: 0, losses: 0, lastPlayedTick: 0 };
   }
@@ -83,8 +121,9 @@
   document.getElementById("btn-add-player").addEventListener("click", ()=>{
     const nameEl = document.getElementById("np-name");
     const name = nameEl.value.trim();
-    if(!name){ nameEl.focus(); return; }
-    const skill = parseInt(document.getElementById("np-skill").value, 10);
+    if(!name){ alert("姓名不能是空白"); nameEl.focus(); return; }
+    const skillRaw = parseFloat(document.getElementById("np-skill").value);
+    const skill = isNaN(skillRaw) ? defaultSkill() : skillRaw;
     const partnerId = document.getElementById("np-partner").value || null;
     const p = makePlayer(name, skill, true);
     p.fixedPartnerId = partnerId;
@@ -94,25 +133,21 @@
       if(partner) partner.fixedPartnerId = p.id; // mutual link
     }
     nameEl.value = "";
+    document.getElementById("np-partner").value = "";
+    applySkillInputBounds(true);
     save();
     renderPlayers();
   });
 
   // ---------- Roster CSV (space-delimited): 姓名 程度 搭檔 ----------
-  function parseSkillToken(tok){
-    if(tok === "12+" || tok === "12以上") return 13;
-    if(/^([1-9]|1[0-2])$/.test(tok)) return parseInt(tok, 10);
-    return null;
-  }
-
   function parseRosterLine(line){
     const parts = line.trim().split(/\s+/);
     if(!parts.length || !parts[0]) return null;
     const name = parts[0];
-    let skill = 6;
-    if(parts[1]){
-      const s = parseSkillToken(parts[1]);
-      if(s) skill = s;
+    let skill = defaultSkill();
+    if(parts[1] !== undefined){
+      const v = parseFloat(parts[1]);
+      if(!isNaN(v)) skill = clampSkill(v);
     }
     const partnerName = parts.slice(2).join(" ");
     return { name, skill, partnerName: (partnerName && partnerName !== "-") ? partnerName : "" };
@@ -136,7 +171,7 @@
     const added = [];
     lines.forEach(line=>{
       const parsed = parseRosterLine(line);
-      if(!parsed) return;
+      if(!parsed || !parsed.name) return;
       const p = makePlayer(parsed.name, parsed.skill, checkedIn);
       state.players.push(p);
       added.push({ player:p, partnerName: parsed.partnerName });
@@ -159,8 +194,7 @@
     const lines = ["# 姓名 程度 搭檔"];
     state.players.filter(p=>!p.removed).forEach(p=>{
       const partner = p.fixedPartnerId ? playerById(p.fixedPartnerId) : null;
-      const skillTok = p.skill >= 13 ? "12+" : p.skill;
-      lines.push([p.name, skillTok, partner ? partner.name : "-"].join(" "));
+      lines.push([p.name, formatSkillNumber(p.skill), partner ? partner.name : "-"].join(" "));
     });
     const blob = new Blob([lines.join("\n")], {type:"text/csv"});
     const url = URL.createObjectURL(blob);
@@ -184,7 +218,7 @@
         const added = addRosterFromText(reader.result, true);
         resetParticipationOnly();
         save();
-        renderPlayers(); renderSettings(); renderSchedule(); renderStats();
+        renderPlayers(); renderSchedule(); renderStats();
         alert("匯入成功，共 "+added.length+" 位球員");
       }catch(err){
         alert("匯入失敗：" + err.message);
@@ -227,6 +261,10 @@
 
   function renderPlayers(){
     refreshPartnerSelect();
+    applySkillInputBounds(false);
+    const cfg = sportConfig();
+    document.getElementById("sport-note").textContent =
+      "目前球種："+cfg.label+"（程度 "+formatSkillNumber(cfg.min)+"～"+formatSkillNumber(cfg.max)+"）";
     const tbody = document.getElementById("player-table-body");
     tbody.innerHTML = "";
     const visible = state.players.filter(p=>!p.removed);
@@ -266,63 +304,12 @@
     return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   }
 
-  // ---------- Court settings ----------
-  function courtIsFree(court){
-    return !court.currentMatch || court.currentMatch.done;
-  }
-
-  function applyCourtCount(newCount){
-    for(let i = state.courts.length - 1; i >= newCount; i--){
-      if(courtIsFree(state.courts[i])){
-        state.courts.splice(i, 1);
-      } else {
-        state.courts[i].retiring = true;
-      }
-    }
-    while(state.courts.length < newCount){
-      state.courts.push(makeCourt());
-    }
-    state.courtCount = newCount;
-  }
-
-  function renderSettings(){
-    document.getElementById("s-courts").value = state.courtCount;
-    document.getElementById("s-mode").value = state.mode;
-    updateSettingsEcho();
-    const retiringCount = state.courts.filter(c=>c.retiring).length;
-    const noteEl = document.getElementById("s-retiring-note");
-    if(retiringCount > 0){
-      noteEl.style.display = "block";
-      noteEl.textContent = "目前有 "+retiringCount+" 片場地正在收尾（最後一輪確認比分後會自動移除）。";
-    } else {
-      noteEl.style.display = "none";
-    }
-  }
-  function updateSettingsEcho(){
-    const courts = parseInt(document.getElementById("s-courts").value,10) || 1;
-    const mode = document.getElementById("s-mode").value;
-    const need = mode === "doubles" ? 4 : 2;
-    document.getElementById("s-need").textContent = need;
-    document.getElementById("s-courts-echo").textContent = courts;
-    document.getElementById("s-total").textContent = need * courts;
-  }
-  document.getElementById("s-courts").addEventListener("input", updateSettingsEcho);
-  document.getElementById("s-mode").addEventListener("change", updateSettingsEcho);
-  document.getElementById("btn-save-settings").addEventListener("click", ()=>{
-    const newCount = Math.max(1, parseInt(document.getElementById("s-courts").value,10) || 1);
-    applyCourtCount(newCount);
-    state.mode = document.getElementById("s-mode").value;
-    save();
-    renderSettings();
-    renderSchedule();
-    alert("設定已儲存");
-  });
-
   // ---------- 開新場 modal ----------
   const modalOverlay = document.getElementById("modal-overlay");
 
   function openModal(){
-    document.getElementById("modal-courts").value = state.courtCount;
+    document.getElementById("modal-sport").value = state.sport;
+    document.getElementById("modal-courts").value = state.courts.length || 2;
     document.getElementById("modal-mode").value = state.mode;
     document.getElementById("modal-bulk-text").value = "";
     document.getElementById("modal-file-import").value = "";
@@ -343,15 +330,18 @@
     document.getElementById("modal-file-name").textContent = f ? f.name : "";
   });
 
-  function startNewSession(newCourtCount, newMode){
+  function startNewSession(sport, courtCount, mode){
+    state.sport = sport;
     state.players.forEach(p=>{
       p.checkedIn = false; p.resting = false; p.left = false;
       p.gamesPlayed = 0; p.wins = 0; p.losses = 0; p.lastPlayedTick = 0;
+      p.skill = clampSkill(p.skill);
     });
-    state.courtCount = newCourtCount;
-    state.mode = newMode;
+    state.mode = mode;
     state.courts = [];
-    for(let i=0;i<newCourtCount;i++) state.courts.push(makeCourt());
+    state.nextCourtNumber = 1;
+    for(let i=0;i<courtCount;i++){ state.courts.push(makeCourt(state.nextCourtNumber)); state.nextCourtNumber++; }
+    state.pending = [];
     state.globalTick = 0;
     state.pairHistory = {};
     state.oppHistory = {};
@@ -360,44 +350,48 @@
 
   function resetParticipationOnly(){
     state.players.forEach(p=>{ p.gamesPlayed=0; p.wins=0; p.losses=0; p.lastPlayedTick=0; });
-    state.courts = state.courts.map(()=>makeCourt());
+    state.courts.forEach(c=>{ c.currentMatch=null; c.retiring=false; c.roundNumber=0; });
+    state.pending = [];
     state.globalTick = 0;
     state.pairHistory = {};
     state.oppHistory = {};
     state.history = [];
   }
 
-  function finishOpeningSession(){
+  function finishOpeningSession(sport){
     const bulkText = document.getElementById("modal-bulk-text").value;
-    if(bulkText.trim()) addRosterFromText(bulkText, false);
     const newCourtCount = Math.max(1, parseInt(document.getElementById("modal-courts").value,10) || 1);
     const newMode = document.getElementById("modal-mode").value;
-    startNewSession(newCourtCount, newMode);
+    state.sport = sport; // so any bulk text below clamps against the newly chosen sport
+    if(bulkText.trim()) addRosterFromText(bulkText, false);
+    startNewSession(sport, newCourtCount, newMode);
     save();
-    renderPlayers(); renderSettings(); renderStats();
+    renderPlayers(); renderStats();
     closeModal();
     document.querySelector('nav.tabs button[data-tab="schedule"]').click();
   }
 
   document.getElementById("modal-start-btn").addEventListener("click", ()=>{
-    const anyProgress = state.courts.some(c=>c.currentMatch) || state.history.length > 0;
+    const anyProgress = state.courts.some(c=>c.currentMatch) || state.pending.length > 0 || state.history.length > 0;
     if(anyProgress){
       if(!confirm("開新場會清除目前的上場次數、比分與歷史紀錄（球員名單會保留），確定要開始新的一場嗎？")) return;
     }
+    const sport = document.getElementById("modal-sport").value;
     const file = document.getElementById("modal-file-import").files[0];
     if(file){
       const reader = new FileReader();
       reader.onload = ()=>{
+        state.sport = sport;
         const lines = reader.result.split(/\r?\n/).map(l=>l.trim()).filter(l=>l && !l.startsWith("#"));
         if(lines.length){
           state.players = [];
           addRosterFromText(reader.result, false);
         }
-        finishOpeningSession();
+        finishOpeningSession(sport);
       };
       reader.readAsText(file);
     } else {
-      finishOpeningSession();
+      finishOpeningSession(sport);
     }
   });
 
@@ -456,7 +450,7 @@
     return penalty;
   }
 
-  // fills two same-court "bins" (left/right) of given capacity from `units` (size 1 or 2),
+  // fills two "bins" (left/right) of given capacity from `units` (size 1 or 2),
   // preferring to place a size-2 unit whenever a bin still has room for both members.
   // returns null if the units can't be split to hit both capacities exactly.
   function packTwoSides(units, capLeft, capRight, leftFirst){
@@ -483,16 +477,37 @@
     return { left, right };
   }
 
-  // Builds one court's match from a per-player left/right/(random) assignment: players
+  // players currently on a court OR already queued in another pending match — never
+  // double-booked into two matches at once
+  function committedPlayerIds(){
+    const set = new Set();
+    state.courts.forEach(c=>{
+      if(c.currentMatch){
+        c.currentMatch.teamA.forEach(id=>set.add(id));
+        c.currentMatch.teamB.forEach(id=>set.add(id));
+      }
+    });
+    state.pending.forEach(m=>{
+      m.teamA.forEach(id=>set.add(id));
+      m.teamB.forEach(id=>set.add(id));
+    });
+    return set;
+  }
+  function eligiblePoolForPending(){
+    const committed = committedPlayerIds();
+    return eligiblePlayers().filter(p=>!committed.has(p.id));
+  }
+
+  // Builds one match from a per-player left/right/(random) assignment: players
   // pinned to "left"/"right" (and their fixed partner, auto-pulled to the same side) are
   // guaranteed a spot on that side; every remaining ("random") slot on either side is
   // filled automatically from the rest of the eligible pool, balancing skill and avoiding
   // recent repeat opponents/partners. Leaving everyone on "random" reproduces the old
   // fully-automatic behavior; pinning everyone reproduces fully-manual.
-  function buildMatchFromSides(courtIndex, matchMode, teamOf){
+  function buildMatchFromSides(matchMode, teamOf){
     const need = matchMode === "doubles" ? 4 : 2;
     const halfNeed = need / 2;
-    const pool = eligiblePoolForCourt(courtIndex);
+    const pool = eligiblePoolForPending();
     const poolIds = new Set(pool.map(p=>p.id));
 
     const forcedLeft = new Set(), forcedRight = new Set();
@@ -558,19 +573,26 @@
     return best;
   }
 
-  function eligiblePoolForCourt(courtIndex){
-    const occupied = new Set();
-    state.courts.forEach((c,i)=>{
-      if(i === courtIndex) return;
-      if(c.currentMatch){
-        c.currentMatch.teamA.forEach(id=>occupied.add(id));
-        c.currentMatch.teamB.forEach(id=>occupied.add(id));
-      }
-    });
-    return eligiblePlayers().filter(p=>!occupied.has(p.id));
+  // ---------- Court management ----------
+  document.getElementById("btn-add-court").addEventListener("click", ()=>{
+    state.courts.push(makeCourt(state.nextCourtNumber));
+    state.nextCourtNumber += 1;
+    save();
+    renderSchedule();
+  });
+
+  function removeCourt(courtIndex){
+    const court = state.courts[courtIndex];
+    if(court.currentMatch && !court.currentMatch.done){
+      court.retiring = true;
+    } else {
+      state.courts.splice(courtIndex, 1);
+    }
+    save();
+    renderSchedule();
   }
 
-  // ---------- Court match lifecycle ----------
+  // ---------- Match lifecycle ----------
   function applyHistoryCounts(matches, sign){
     sign = sign || 1;
     matches.forEach(m=>{
@@ -589,40 +611,37 @@
     });
   }
 
-  function revertMatchCounts(match){
+  function assignPendingToCourt(pendingId, courtIndex){
+    const court = state.courts[courtIndex];
+    if(!court || court.currentMatch) return;
+    const idx = state.pending.findIndex(m=>m.id === pendingId);
+    if(idx < 0) return;
+    const match = state.pending[idx];
+    state.pending.splice(idx, 1);
+    state.globalTick += 1;
     match.teamA.concat(match.teamB).forEach(id=>{
       const p = playerById(id);
-      if(p) p.gamesPlayed = Math.max(0, p.gamesPlayed - 1);
-    });
-    applyHistoryCounts([match], -1);
-  }
-
-  function applyMatchToCourt(courtIndex, teamA, teamB, advanceRound){
-    const court = state.courts[courtIndex];
-    if(court.currentMatch && !court.currentMatch.done){
-      revertMatchCounts(court.currentMatch);
-    }
-    state.globalTick += 1;
-    teamA.concat(teamB).forEach(id=>{
-      const p = playerById(id);
+      if(!p) return;
       p.gamesPlayed += 1;
       p.lastPlayedTick = state.globalTick;
     });
-    const newMatch = { matchId: uid(), teamA, teamB, scoreA:null, scoreB:null, done:false, winner:null };
+    const newMatch = { matchId: uid(), teamA: match.teamA, teamB: match.teamB, scoreA:null, scoreB:null, done:false, winner:null };
     applyHistoryCounts([newMatch], 1);
     court.currentMatch = newMatch;
-    if(advanceRound || !court.roundNumber) court.roundNumber += 1;
+    court.roundNumber += 1;
     save();
+    renderSchedule();
+    renderPlayers();
   }
 
-  function pushOrUpdateHistory(courtIndex, court, match){
+  function pushOrUpdateHistory(court, match){
     let entry = state.history.find(h=>h.matchId === match.matchId);
     if(!entry){
       entry = { matchId: match.matchId, ts: Date.now() };
       state.history.unshift(entry);
       if(state.history.length > 300) state.history.length = 300;
     }
-    entry.courtLabel = "場地"+(courtIndex+1);
+    entry.courtLabel = "場地"+court.number;
     entry.roundNumber = court.roundNumber;
     entry.teamA = match.teamA.slice();
     entry.teamB = match.teamB.slice();
@@ -635,12 +654,6 @@
     const court = state.courts[courtIndex];
     const m = court.currentMatch;
     if(!m) return;
-    if(m.done){
-      const prevWinners = m.winner === 'A' ? m.teamA : m.teamB;
-      const prevLosers = m.winner === 'A' ? m.teamB : m.teamA;
-      prevWinners.forEach(id=>{ const p=playerById(id); if(p) p.wins = Math.max(0,p.wins-1); });
-      prevLosers.forEach(id=>{ const p=playerById(id); if(p) p.losses = Math.max(0,p.losses-1); });
-    }
     m.scoreA = scoreA; m.scoreB = scoreB;
     m.winner = scoreA > scoreB ? 'A' : 'B';
     m.done = true;
@@ -648,7 +661,8 @@
     const losers = m.winner === 'A' ? m.teamB : m.teamA;
     winners.forEach(id=>{ const p = playerById(id); if(p) p.wins += 1; });
     losers.forEach(id=>{ const p = playerById(id); if(p) p.losses += 1; });
-    pushOrUpdateHistory(courtIndex, court, m);
+    pushOrUpdateHistory(court, m);
+    court.currentMatch = null; // score confirmed -> court is released immediately
     if(court.retiring){
       const idx = state.courts.indexOf(court);
       if(idx >= 0) state.courts.splice(idx, 1);
@@ -658,29 +672,113 @@
     renderPlayers();
   }
 
-  // ---------- Generation UI: pick specific players to a side, rest auto-fills ----------
-  function startGeneration(courtIndex, advanceRound){
-    const court = state.courts[courtIndex];
-    if(court.currentMatch && !court.currentMatch.done){
-      if(!confirm("這場還沒有確認比分，確定要重新產生對戰嗎？")) return;
-    }
-    selectionUI = { courtIndex, matchMode: state.mode, teamOf: new Map(), advanceRound };
+  // ---------- Pending-match builder UI ----------
+  function startPendingBuild(){
+    genUI = { matchMode: state.mode, teamOf: new Map() };
     renderSchedule();
   }
-
-  function cancelGeneration(){
-    selectionUI = null;
+  function cancelPendingBuild(){
+    genUI = null;
     renderSchedule();
   }
-
-  function confirmGeneration(){
-    const { courtIndex, matchMode, teamOf, advanceRound } = selectionUI;
-    const result = buildMatchFromSides(courtIndex, matchMode, teamOf);
+  function confirmPendingBuild(){
+    const { matchMode, teamOf } = genUI;
+    const result = buildMatchFromSides(matchMode, teamOf);
     if(result.error){ alert(result.error); return; }
-    applyMatchToCourt(courtIndex, result.teamA, result.teamB, advanceRound);
-    selectionUI = null;
+    state.pending.push({ id: uid(), matchMode, teamA: result.teamA, teamB: result.teamB });
+    state.mode = matchMode;
+    genUI = null;
+    save();
     renderSchedule();
-    renderPlayers();
+  }
+
+  function renderGenerationPanel(){
+    const halfNeed = (genUI.matchMode === "doubles" ? 4 : 2) / 2;
+    const pool = eligiblePoolForPending().slice()
+      .sort((a,b)=> fairnessScore({members:[a]}) - fairnessScore({members:[b]}));
+    const panel = document.createElement("div");
+    panel.className = "gen-panel";
+
+    const modeField = document.createElement("div");
+    modeField.className = "field";
+    modeField.style.marginBottom = "10px";
+    const modeLabel = document.createElement("label");
+    modeLabel.textContent = "比賽模式";
+    const modeSelect = document.createElement("select");
+    [["doubles","雙打 (4人一場)"],["singles","單打 (2人一場)"]].forEach(([val,label])=>{
+      const opt = document.createElement("option");
+      opt.value = val; opt.textContent = label;
+      if(genUI.matchMode === val) opt.selected = true;
+      modeSelect.appendChild(opt);
+    });
+    modeSelect.addEventListener("change", ()=>{
+      genUI.matchMode = modeSelect.value;
+      genUI.teamOf.clear();
+      renderSchedule();
+    });
+    modeField.appendChild(modeLabel);
+    modeField.appendChild(modeSelect);
+    panel.appendChild(modeField);
+
+    const list = document.createElement("div");
+    list.className = "pick-list";
+    if(!pool.length){
+      list.innerHTML = '<div class="muted">目前沒有可選的球員（需已報到、未休息／離場，且未在場上或已被預排）。</div>';
+    }
+    pool.forEach(p=>{
+      const row = document.createElement("div");
+      row.className = "pick-row";
+      const info = document.createElement("span");
+      info.className = "info";
+      info.textContent = p.name+" "+skillDisplay(p.skill)+" · 已上場"+p.gamesPlayed+"次";
+      row.appendChild(info);
+      const toggle = document.createElement("div");
+      toggle.className = "team-toggle";
+      const current = genUI.teamOf.get(p.id) || "random";
+      [["random","隨機"],["left","左隊"],["right","右隊"]].forEach(([val,label])=>{
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = label;
+        if(current === val) b.classList.add("active");
+        b.addEventListener("click", ()=>{
+          if(val === "random") genUI.teamOf.delete(p.id);
+          else genUI.teamOf.set(p.id, val);
+          renderSchedule();
+        });
+        toggle.appendChild(b);
+      });
+      row.appendChild(toggle);
+      list.appendChild(row);
+    });
+    panel.appendChild(list);
+
+    let leftCount = 0, rightCount = 0;
+    pool.forEach(p=>{
+      const side = genUI.teamOf.get(p.id);
+      if(side === "left") leftCount++;
+      else if(side === "right") rightCount++;
+    });
+    const countInfo = document.createElement("div");
+    countInfo.className = "muted";
+    countInfo.style.marginBottom = "8px";
+    countInfo.textContent = "左隊已指定 "+leftCount+"/"+halfNeed+"　右隊已指定 "+rightCount+"/"+halfNeed+"　其餘按「確認預排」後自動補上";
+    panel.appendChild(countInfo);
+
+    const actionRow = document.createElement("div");
+    actionRow.className = "row";
+    const confirmBtn = document.createElement("button");
+    confirmBtn.className = "btn small";
+    confirmBtn.textContent = "確認預排";
+    confirmBtn.addEventListener("click", confirmPendingBuild);
+    const cancelBtn = document.createElement("button");
+    cancelBtn.className = "btn secondary small";
+    cancelBtn.textContent = "取消";
+    cancelBtn.addEventListener("click", cancelPendingBuild);
+    actionRow.appendChild(confirmBtn);
+    actionRow.appendChild(cancelBtn);
+    panel.appendChild(actionRow);
+
+    return panel;
   }
 
   // ---------- Schedule tab rendering ----------
@@ -709,21 +807,18 @@
     `;
   }
 
-  function renderScoreRow(court, index){
-    const m = court.currentMatch;
+  function renderScoreRow(index){
     const row = document.createElement("div");
     row.className = "score-input-row";
     const scoreA = document.createElement("input");
     scoreA.type = "number"; scoreA.min = "0"; scoreA.placeholder = "左比分";
-    scoreA.value = m.scoreA === null ? "" : m.scoreA;
     const sep = document.createElement("span");
     sep.textContent = ":";
     const scoreB = document.createElement("input");
     scoreB.type = "number"; scoreB.min = "0"; scoreB.placeholder = "右比分";
-    scoreB.value = m.scoreB === null ? "" : m.scoreB;
     const btn = document.createElement("button");
     btn.className = "btn small";
-    btn.textContent = m.done ? "更新比分" : "確認比分";
+    btn.textContent = "確認比分";
     btn.addEventListener("click", ()=>{
       const a = parseInt(scoreA.value, 10);
       const b = parseInt(scoreB.value, 10);
@@ -735,141 +830,111 @@
     return row;
   }
 
-  function renderGenerationPanel(courtIndex){
-    const halfNeed = (selectionUI.matchMode === "doubles" ? 4 : 2) / 2;
-    const pool = eligiblePoolForCourt(courtIndex).slice()
-      .sort((a,b)=> fairnessScore({members:[a]}) - fairnessScore({members:[b]}));
-    const panel = document.createElement("div");
-    panel.className = "gen-panel";
-
-    // per-round match-mode override; defaults to the global setting but can change per round
-    const modeField = document.createElement("div");
-    modeField.className = "field";
-    modeField.style.marginBottom = "10px";
-    const modeLabel = document.createElement("label");
-    modeLabel.textContent = "本輪模式（預設："+(state.mode === "doubles" ? "雙打" : "單打")+"）";
-    const modeSelect = document.createElement("select");
-    [["doubles","雙打 (4人一場)"],["singles","單打 (2人一場)"]].forEach(([val,label])=>{
-      const opt = document.createElement("option");
-      opt.value = val; opt.textContent = label;
-      if(selectionUI.matchMode === val) opt.selected = true;
-      modeSelect.appendChild(opt);
-    });
-    modeSelect.addEventListener("change", ()=>{
-      selectionUI.matchMode = modeSelect.value;
-      selectionUI.teamOf.clear();
-      renderSchedule();
-    });
-    modeField.appendChild(modeLabel);
-    modeField.appendChild(modeSelect);
-    panel.appendChild(modeField);
-
-    const list = document.createElement("div");
-    list.className = "pick-list";
-    if(!pool.length){
-      list.innerHTML = '<div class="muted">目前沒有可選的球員（需已報到、未休息／離場，且不在其他場地上）。</div>';
-    }
-    pool.forEach(p=>{
-      const row = document.createElement("div");
-      row.className = "pick-row";
-      const info = document.createElement("span");
-      info.className = "info";
-      info.textContent = p.name+" "+skillDisplay(p.skill)+" · 已上場"+p.gamesPlayed+"次";
-      row.appendChild(info);
-      const toggle = document.createElement("div");
-      toggle.className = "team-toggle";
-      const current = selectionUI.teamOf.get(p.id) || "random";
-      [["random","隨機"],["left","左隊"],["right","右隊"]].forEach(([val,label])=>{
-        const b = document.createElement("button");
-        b.type = "button";
-        b.textContent = label;
-        if(current === val) b.classList.add("active");
-        b.addEventListener("click", ()=>{
-          if(val === "random") selectionUI.teamOf.delete(p.id);
-          else selectionUI.teamOf.set(p.id, val);
-          renderSchedule();
-        });
-        toggle.appendChild(b);
-      });
-      row.appendChild(toggle);
-      list.appendChild(row);
-    });
-    panel.appendChild(list);
-
-    let leftCount = 0, rightCount = 0;
-    pool.forEach(p=>{
-      const side = selectionUI.teamOf.get(p.id);
-      if(side === "left") leftCount++;
-      else if(side === "right") rightCount++;
-    });
-    const countInfo = document.createElement("div");
-    countInfo.className = "muted";
-    countInfo.style.marginBottom = "8px";
-    countInfo.textContent = "左隊已指定 "+leftCount+"/"+halfNeed+"　右隊已指定 "+rightCount+"/"+halfNeed+"　其餘按「確認產生」後自動補上";
-    panel.appendChild(countInfo);
-
-    const actionRow = document.createElement("div");
-    actionRow.className = "row";
-    const confirmBtn = document.createElement("button");
-    confirmBtn.className = "btn small";
-    confirmBtn.textContent = "確認產生";
-    confirmBtn.addEventListener("click", confirmGeneration);
-    const cancelBtn = document.createElement("button");
-    cancelBtn.className = "btn secondary small";
-    cancelBtn.textContent = "取消";
-    cancelBtn.addEventListener("click", cancelGeneration);
-    actionRow.appendChild(confirmBtn);
-    actionRow.appendChild(cancelBtn);
-    panel.appendChild(actionRow);
-
-    return panel;
-  }
-
   function renderCourtCard(court, index){
     const div = document.createElement("div");
     div.className = "court card" + (court.retiring ? " retiring" : "");
     const m = court.currentMatch;
-    const roundLabel = court.roundNumber ? ("第 "+court.roundNumber+" 輪") : "尚未開始";
-    const retireTag = court.retiring ? '<span class="badge-retiring">最後一輪</span>' : "";
-    const head = document.createElement("h3");
-    head.innerHTML = `<span>場地 ${index+1} · ${roundLabel}${retireTag}</span>`;
+
+    const head = document.createElement("div");
+    head.className = "court-head";
+    const label = document.createElement("span");
+    label.className = "muted";
+    label.textContent = "場地";
+    head.appendChild(label);
+    const numberInput = document.createElement("input");
+    numberInput.className = "court-number-input";
+    numberInput.value = court.number;
+    numberInput.addEventListener("change", ()=>{
+      court.number = numberInput.value.trim() || court.number;
+      numberInput.value = court.number;
+      save();
+    });
+    head.appendChild(numberInput);
+    const played = document.createElement("span");
+    played.className = "muted";
+    played.textContent = "已進行 "+court.roundNumber+" 場";
+    head.appendChild(played);
+    if(court.retiring){
+      const tag = document.createElement("span");
+      tag.className = "badge-retiring";
+      tag.textContent = "最後一場";
+      head.appendChild(tag);
+    }
+    const removeBtn = document.createElement("button");
+    removeBtn.className = "btn danger small";
+    removeBtn.textContent = "移除";
+    removeBtn.addEventListener("click", ()=> removeCourt(index));
+    head.appendChild(removeBtn);
     div.appendChild(head);
 
     if(m){
       const teamsWrap = document.createElement("div");
       teamsWrap.innerHTML = teamsHtml(m);
       div.appendChild(teamsWrap);
-      div.appendChild(renderScoreRow(court, index));
-    } else {
+      div.appendChild(renderScoreRow(index));
+    } else if(!court.retiring){
       const empty = document.createElement("div");
       empty.className = "empty";
-      empty.textContent = "尚未開始，按下方按鈕產生第一輪。";
+      empty.textContent = "空場地，可在下方「下一輪預排」指派球員入場。";
       div.appendChild(empty);
     }
 
-    if(!court.retiring){
-      const btnRow = document.createElement("div");
-      btnRow.className = "toolbar";
-      const genBtn = document.createElement("button");
-      genBtn.className = "btn small";
-      genBtn.textContent = m ? "🔀 產生下一輪" : "🔀 產生第一輪";
-      genBtn.addEventListener("click", ()=> startGeneration(index, true));
-      btnRow.appendChild(genBtn);
-      if(m){
-        const regenBtn = document.createElement("button");
-        regenBtn.className = "btn secondary small";
-        regenBtn.textContent = "🎲 重排這一輪";
-        regenBtn.addEventListener("click", ()=> startGeneration(index, false));
-        btnRow.appendChild(regenBtn);
-      }
-      div.appendChild(btnRow);
-    }
-
-    if(selectionUI && selectionUI.courtIndex === index){
-      div.appendChild(renderGenerationPanel(index));
-    }
-
     return div;
+  }
+
+  function renderPendingCard(){
+    const wrap = document.getElementById("pending-list");
+    wrap.innerHTML = "";
+    document.getElementById("pending-empty").style.display = state.pending.length ? "none" : "block";
+    const freeCourts = state.courts.map((c,i)=>({c,i})).filter(x=>!x.c.currentMatch);
+    state.pending.forEach(match=>{
+      const div = document.createElement("div");
+      div.className = "court";
+      const teamsWrap = document.createElement("div");
+      teamsWrap.innerHTML = teamsHtml(match);
+      div.appendChild(teamsWrap);
+
+      const actionRow = document.createElement("div");
+      actionRow.className = "row";
+      if(freeCourts.length){
+        const select = document.createElement("select");
+        select.style.width = "auto";
+        freeCourts.forEach(({c,i})=>{
+          const opt = document.createElement("option");
+          opt.value = i; opt.textContent = "場地 "+c.number;
+          select.appendChild(opt);
+        });
+        const assignBtn = document.createElement("button");
+        assignBtn.className = "btn small";
+        assignBtn.textContent = "指派上場";
+        assignBtn.addEventListener("click", ()=>{
+          assignPendingToCourt(match.id, parseInt(select.value, 10));
+        });
+        actionRow.appendChild(select);
+        actionRow.appendChild(assignBtn);
+      } else {
+        const note = document.createElement("span");
+        note.className = "muted";
+        note.textContent = "目前沒有空場地，等場地釋出後才能指派上場";
+        actionRow.appendChild(note);
+      }
+      const removeBtn = document.createElement("button");
+      removeBtn.className = "btn danger small";
+      removeBtn.textContent = "移除";
+      removeBtn.addEventListener("click", ()=>{
+        if(!confirm("確定要移除這個預排的輪次嗎？")) return;
+        state.pending = state.pending.filter(m=>m.id !== match.id);
+        save();
+        renderSchedule();
+      });
+      actionRow.appendChild(removeBtn);
+      div.appendChild(actionRow);
+      wrap.appendChild(div);
+    });
+
+    const builderSlot = document.getElementById("pending-builder");
+    builderSlot.innerHTML = "";
+    if(genUI) builderSlot.appendChild(renderGenerationPanel());
   }
 
   function renderWaitingList(){
@@ -882,11 +947,17 @@
         c.currentMatch.teamB.forEach(id=>onCourt.add(id));
       }
     });
+    const pendingIds = new Set();
+    state.pending.forEach(m=>{
+      m.teamA.forEach(id=>pendingIds.add(id));
+      m.teamB.forEach(id=>pendingIds.add(id));
+    });
     const entries = [];
     state.players.forEach(p=>{
       if(p.removed || onCourt.has(p.id)) return;
       let label;
-      if(!p.checkedIn) label = "未報到";
+      if(pendingIds.has(p.id)) label = "已預排";
+      else if(!p.checkedIn) label = "未報到";
       else if(p.left) label = "離場";
       else if(p.resting) label = "休息";
       else label = "候補";
@@ -907,8 +978,11 @@
     state.courts.forEach((court, idx)=>{
       container.appendChild(renderCourtCard(court, idx));
     });
+    renderPendingCard();
     renderWaitingList();
   }
+
+  document.getElementById("btn-build-pending").addEventListener("click", startPendingBuild);
 
   // ---------- Stats tab ----------
   function renderStats(){
@@ -934,7 +1008,7 @@
       const a = h.teamA.map(id=>playerById(id)?.name||"?").join("/");
       const b = h.teamB.map(id=>playerById(id)?.name||"?").join("/");
       const winName = h.winner === 'A' ? a : b;
-      div.innerHTML = `<h3><span>${h.courtLabel} · 第 ${h.roundNumber} 輪</span></h3>
+      div.innerHTML = `<h3><span>${h.courtLabel} · 第 ${h.roundNumber} 場</span></h3>
         <div class="muted" style="font-size:13px;line-height:1.6">${a} vs ${b} － 比分 ${h.scoreA}:${h.scoreB}，${escapeHtml(winName)} 勝</div>`;
       histWrap.appendChild(div);
     });
@@ -947,8 +1021,34 @@
     renderPlayers(); renderSchedule(); renderStats();
   });
 
+  document.getElementById("btn-export-record").addEventListener("click", ()=>{
+    const lines = [];
+    lines.push("# 球員統計");
+    lines.push(["姓名","上場","勝","負","勝率"].join(","));
+    state.players.filter(p=>!p.removed).forEach(p=>{
+      const total = p.wins + p.losses;
+      const rate = total ? Math.round(p.wins/total*100)+"%" : "";
+      lines.push([p.name, p.gamesPlayed, p.wins, p.losses, rate].join(","));
+    });
+    lines.push("");
+    lines.push("# 歷史紀錄");
+    lines.push(["場地","場次","左隊","右隊","比分","勝方"].join(","));
+    state.history.forEach(h=>{
+      const a = h.teamA.map(id=>playerById(id)?.name||"?").join("/");
+      const b = h.teamB.map(id=>playerById(id)?.name||"?").join("/");
+      const win = h.winner === 'A' ? a : b;
+      lines.push([h.courtLabel, h.roundNumber, a, b, h.scoreA+":"+h.scoreB, win].join(","));
+    });
+    const blob = new Blob([lines.join("\n")], {type:"text/csv"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const stamp = new Date().toISOString().slice(0,10);
+    a.href = url; a.download = "record-"+stamp+".csv";
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  });
+
   // ---------- init ----------
   renderPlayers();
-  renderSettings();
   renderSchedule();
 })();
