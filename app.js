@@ -304,6 +304,7 @@
     const skillTd = document.createElement("td");
     const skillInput = document.createElement("input");
     skillInput.type = "number";
+    skillInput.className = "skill-input";
     const cfg = sportConfig();
     skillInput.min = cfg.min; skillInput.max = cfg.max; skillInput.step = cfg.step;
     skillInput.value = p.skill;
@@ -701,13 +702,18 @@
     renderSchedule();
   });
 
-  function removeCourt(courtIndex){
+  // Arms/disarms a court for removal — never deletes outright, so the action
+  // can always be undone via "取消移除". A court with an active match is
+  // actually removed once its score gets confirmed (see confirmScore); an
+  // empty court needs the separate explicit "確定移除" to actually go away.
+  function toggleCourtRemoval(courtIndex){
     const court = state.courts[courtIndex];
-    if(court.currentMatch && !court.currentMatch.done){
-      court.retiring = true;
-    } else {
-      state.courts.splice(courtIndex, 1);
-    }
+    court.retiring = !court.retiring;
+    save();
+    renderSchedule();
+  }
+  function confirmRemoveEmptyCourt(courtIndex){
+    state.courts.splice(courtIndex, 1);
     save();
     renderSchedule();
   }
@@ -742,8 +748,9 @@
     match.teamA.concat(match.teamB).forEach(id=>{
       const p = playerById(id);
       if(!p) return;
-      p.gamesPlayed += 1;
-      p.lastPlayedTick = state.globalTick;
+      p.lastPlayedTick = state.globalTick; // no longer "waiting" once play starts
+      // gamesPlayed only counts once a score is actually confirmed (see confirmScore) —
+      // a match abandoned mid-way via 中途下場 shouldn't count as played.
     });
     const newMatch = { matchId: uid(), teamA: match.teamA, teamB: match.teamB, scoreA:null, scoreB:null, done:false, winner:null };
     applyHistoryCounts([newMatch], 1);
@@ -779,8 +786,8 @@
     m.done = true;
     const winners = m.winner === 'A' ? m.teamA : m.teamB;
     const losers = m.winner === 'A' ? m.teamB : m.teamA;
-    winners.forEach(id=>{ const p = playerById(id); if(p) p.wins += 1; });
-    losers.forEach(id=>{ const p = playerById(id); if(p) p.losses += 1; });
+    winners.forEach(id=>{ const p = playerById(id); if(p){ p.wins += 1; p.gamesPlayed += 1; } });
+    losers.forEach(id=>{ const p = playerById(id); if(p){ p.losses += 1; p.gamesPlayed += 1; } });
     pushOrUpdateHistory(court, m);
     court.currentMatch = null; // score confirmed -> court is released immediately
     if(court.retiring){
@@ -1161,14 +1168,21 @@
     if(court.retiring){
       const tag = document.createElement("span");
       tag.className = "badge-retiring";
-      tag.textContent = "最後一場";
+      tag.textContent = m ? "最後一場" : "即將移除";
       head.appendChild(tag);
     }
     const removeBtn = document.createElement("button");
     removeBtn.className = "btn danger small";
-    removeBtn.textContent = "移除";
-    removeBtn.addEventListener("click", ()=> removeCourt(index));
+    removeBtn.textContent = court.retiring ? "取消移除" : "移除";
+    removeBtn.addEventListener("click", ()=> toggleCourtRemoval(index));
     head.appendChild(removeBtn);
+    if(court.retiring && !m){
+      const confirmBtn = document.createElement("button");
+      confirmBtn.className = "btn danger small";
+      confirmBtn.textContent = "確定移除";
+      confirmBtn.addEventListener("click", ()=> confirmRemoveEmptyCourt(index));
+      head.appendChild(confirmBtn);
+    }
     div.appendChild(head);
 
     if(m){
@@ -1176,7 +1190,12 @@
       teamsWrap.innerHTML = teamsHtml(m);
       div.appendChild(teamsWrap);
       div.appendChild(renderScoreRow(index));
-    } else if(!court.retiring){
+    } else if(court.retiring){
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "此場地即將移除，按「確定移除」立即移除，或「取消移除」保留。";
+      div.appendChild(empty);
+    } else {
       const empty = document.createElement("div");
       empty.className = "empty";
       empty.textContent = "空場地，可在下方「下一輪預排」指派球員入場。";
