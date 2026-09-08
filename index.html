@@ -16,7 +16,7 @@
     </div>
   </div>
   <nav class="tabs">
-    <button data-tab="roster" class="active">球員與場地設定</button>
+    <button data-tab="roster" class="active">球員設定</button>
     <button data-tab="schedule">排場</button>
     <button data-tab="stats">記錄</button>
   </nav>
@@ -40,7 +40,7 @@
       <p class="muted">狀態操作：點一下「未報到／已報到」切換是否到場；「休息」「離場」是開關（亮＝啟用），啟用時該球員不會被排入對戰。</p>
       <div class="table-scroll">
         <table>
-          <thead><tr><th>姓名</th><th>程度</th><th>搭檔</th><th>狀態</th><th>已上場數</th><th></th></tr></thead>
+          <thead><tr><th>姓名</th><th>程度</th><th>搭檔</th><th>已上場數</th><th>狀態</th><th></th></tr></thead>
           <tbody id="player-table-body"></tbody>
           <tfoot>
             <tr>
@@ -88,18 +88,18 @@
     <div class="card">
       <h2>下一輪預排</h2>
       <p class="muted">在這裡先選好球員與比賽方式，可以一次預排好幾輪；等場地空出來後，再指派要進哪一片場地。</p>
-      <div class="row" style="margin-bottom:10px;">
+      <div id="pending-list"></div>
+      <div class="empty" id="pending-empty" style="display:none">目前沒有預排的輪次。</div>
+      <div class="row" style="margin:10px 0;">
         <button class="btn" id="btn-build-pending">➕ 預排一輪</button>
       </div>
       <div id="pending-builder"></div>
-      <div id="pending-list"></div>
-      <div class="empty" id="pending-empty" style="display:none">目前沒有預排的輪次。</div>
     </div>
 
     <div class="card">
-      <h2>候補 / 未上場</h2>
+      <h2>板凳區</h2>
       <div class="waiting-list" id="waiting-list"></div>
-      <div class="empty" id="waiting-empty" style="display:none">目前沒有人候補。</div>
+      <div class="empty" id="waiting-empty" style="display:none">目前沒有人在板凳區。</div>
     </div>
   </section>
 
@@ -133,7 +133,7 @@
       <h2>🏸 開新場</h2>
       <button class="modal-close" id="modal-close-btn" aria-label="關閉">✕</button>
     </div>
-    <p class="muted">名單與場地都可以先不設定，開場後隨時可以到「球員與場地設定」「排場」頁增減。</p>
+    <p class="muted">名單與場地都可以先不設定，開場後隨時可以到「球員設定」「排場」頁增減。</p>
 
     <div class="field" style="margin-bottom:10px;">
       <label>球種</label>
