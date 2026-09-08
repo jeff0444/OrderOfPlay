@@ -840,12 +840,42 @@
     renderSchedule();
   }
 
-  function renderTeamsPreview(halfNeed, pool){
-    const leftIds = [], rightIds = [];
+  // Resolves each pool player's side, folding in fixed partners that get
+  // auto-pulled onto their partner's side in doubles (marked `auto:true`).
+  // Only explicit ("random"/"left"/"right" picks) actually live in
+  // genUI.teamOf — the auto entries are derived fresh on every render, so
+  // setting the anchor player back to "random" immediately frees the partner.
+  function effectiveAssignments(pool){
+    const map = new Map();
     pool.forEach(p=>{
       const side = genUI.teamOf.get(p.id);
-      if(side === "left") leftIds.push(p.id);
-      else if(side === "right") rightIds.push(p.id);
+      if(side) map.set(p.id, { side, auto:false });
+    });
+    if(genUI.matchMode === "doubles"){
+      const poolIds = new Set(pool.map(p=>p.id));
+      [...map.entries()].forEach(([id, entry])=>{
+        const p = playerById(id);
+        if(!p || !p.fixedPartnerId || !poolIds.has(p.fixedPartnerId)) return;
+        if(!map.has(p.fixedPartnerId)){
+          map.set(p.fixedPartnerId, { side: entry.side, auto:true });
+        }
+      });
+    }
+    return map;
+  }
+  // how many of a side's slots player p would take up if assigned there —
+  // 2 when they have a fixed partner also in the pool (doubles pulls the
+  // partner along), 1 otherwise.
+  function unitSize(p, poolIds){
+    return (genUI.matchMode === "doubles" && p.fixedPartnerId && poolIds.has(p.fixedPartnerId)) ? 2 : 1;
+  }
+
+  function renderTeamsPreview(halfNeed, pool, effMap){
+    const leftIds = [], rightIds = [];
+    pool.forEach(p=>{
+      const eff = effMap.get(p.id);
+      if(eff && eff.side === "left") leftIds.push(p.id);
+      else if(eff && eff.side === "right") rightIds.push(p.id);
     });
     const wrap = document.createElement("div");
     wrap.className = "teams";
@@ -875,8 +905,7 @@
     const halfNeed = (genUI.matchMode === "doubles" ? 4 : 2) / 2;
     const isEditing = !!genUI.editingId;
     const excludeIds = isEditing ? [genUI.editingId] : [];
-    const pool = eligiblePoolForPending(excludeIds).slice()
-      .sort((a,b)=> fairnessScore({members:[a]}) - fairnessScore({members:[b]}));
+    const pool = orderWithPartnerGrouping(eligiblePoolForPending(excludeIds));
     const panel = document.createElement("div");
     panel.className = "gen-panel";
 
@@ -908,7 +937,12 @@
     modeField.appendChild(modeSelect);
     panel.appendChild(modeField);
 
-    panel.appendChild(renderTeamsPreview(halfNeed, pool));
+    const poolIds = new Set(pool.map(p=>p.id));
+    const effMap = effectiveAssignments(pool);
+    let leftCount = 0, rightCount = 0;
+    effMap.forEach(({side})=>{ if(side === "left") leftCount++; else if(side === "right") rightCount++; });
+
+    panel.appendChild(renderTeamsPreview(halfNeed, pool, effMap));
 
     const list = document.createElement("div");
     list.className = "pick-list";
@@ -924,13 +958,27 @@
       row.appendChild(info);
       const toggle = document.createElement("div");
       toggle.className = "team-toggle";
-      const current = genUI.teamOf.get(p.id) || "random";
+      const eff = effMap.get(p.id);
+      const isAuto = !!(eff && eff.auto);
+      const current = isAuto ? eff.side : (genUI.teamOf.get(p.id) || "random");
+      const size = unitSize(p, poolIds);
+      const remaining = { left: halfNeed - leftCount, right: halfNeed - rightCount };
       [["random","隨機"],["left","左隊"],["right","右隊"]].forEach(([val,label])=>{
         const b = document.createElement("button");
         b.type = "button";
         b.textContent = label;
         if(current === val) b.classList.add("active");
+        let disabled = false;
+        if(isAuto){
+          disabled = true; // controlled entirely by the anchor partner
+        } else if(val !== "random" && val !== current){
+          disabled = size > remaining[val];
+        }
+        if(disabled) b.disabled = true;
+        if(isAuto) b.title = "搭檔已被指定上場，跟著一起入隊；把搭檔改回「隨機」才能單獨調整";
+        else if(disabled) b.title = "這隊人數已滿，請先讓其他人讓出名額";
         b.addEventListener("click", ()=>{
+          if(disabled) return;
           if(val === "random") genUI.teamOf.delete(p.id);
           else genUI.teamOf.set(p.id, val);
           renderSchedule();
@@ -975,6 +1023,32 @@
       <span class="col-games muted">${p.gamesPlayed}場</span>
       <span class="col-partner muted">${partner ? "- "+escapeHtml(partner.name) : ""}</span>
     `;
+  }
+
+  // sorts players by games played asc, then skill asc — keeping fixed-partner
+  // pairs adjacent, anchored at whichever partner has the lower skill (the
+  // other partner is placed right after, regardless of their own stats).
+  // Only pairs where both members are present in `players` are grouped.
+  function orderWithPartnerGrouping(players){
+    const sorted = players.slice().sort((a,b)=> a.gamesPlayed - b.gamesPlayed || a.skill - b.skill);
+    const byId = new Map(sorted.map(p=>[p.id, p]));
+    const consumed = new Set();
+    const ordered = [];
+    sorted.forEach(p=>{
+      if(consumed.has(p.id)) return;
+      const partner = p.fixedPartnerId ? byId.get(p.fixedPartnerId) : null;
+      if(partner && !consumed.has(partner.id)){
+        const selfIsAnchor = p.skill < partner.skill ||
+          (p.skill === partner.skill && p.gamesPlayed <= partner.gamesPlayed);
+        if(!selfIsAnchor) return; // will be emitted right after its anchor
+        ordered.push(p, partner);
+        consumed.add(p.id); consumed.add(partner.id);
+      } else {
+        ordered.push(p);
+        consumed.add(p.id);
+      }
+    });
+    return ordered;
   }
 
   // ---------- Schedule tab rendering ----------
@@ -1199,28 +1273,8 @@
       else { label = "候補"; cls = "bench"; }
       entries.push({ p, label, cls });
     });
-    entries.sort((x,y)=> x.p.gamesPlayed - y.p.gamesPlayed || x.p.skill - y.p.skill);
-
-    // keep fixed-partner pairs adjacent: the lower-skill partner keeps its
-    // natural sort position (the "anchor"), the other partner is placed
-    // right after it, regardless of where their own stats would rank them.
     const entryById = new Map(entries.map(e=>[e.p.id, e]));
-    const consumed = new Set();
-    const ordered = [];
-    entries.forEach(e=>{
-      if(consumed.has(e.p.id)) return;
-      const partnerEntry = e.p.fixedPartnerId ? entryById.get(e.p.fixedPartnerId) : null;
-      if(partnerEntry && !consumed.has(partnerEntry.p.id)){
-        const selfIsAnchor = e.p.skill < partnerEntry.p.skill ||
-          (e.p.skill === partnerEntry.p.skill && e.p.gamesPlayed <= partnerEntry.p.gamesPlayed);
-        if(!selfIsAnchor) return; // wait — will be emitted right after its anchor below
-        ordered.push(e, partnerEntry);
-        consumed.add(e.p.id); consumed.add(partnerEntry.p.id);
-      } else {
-        ordered.push(e);
-        consumed.add(e.p.id);
-      }
-    });
+    const ordered = orderWithPartnerGrouping(entries.map(e=>e.p)).map(p=>entryById.get(p.id));
 
     document.getElementById("waiting-empty").style.display = ordered.length ? "none":"block";
     ordered.forEach(({p, label, cls})=>{

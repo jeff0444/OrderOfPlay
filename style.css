@@ -124,6 +124,8 @@ input.np-name-input{width:80px;min-width:0;}
 .team-toggle button{padding:2px 6px;font-size:11px;border-radius:5px;border:1px solid var(--line);
   background:var(--card);color:var(--ink);cursor:pointer;}
 .team-toggle button.active{background:var(--accent);color:#fff;border-color:var(--accent);}
+.team-toggle button:disabled{opacity:.45;cursor:not-allowed;}
+.team-toggle button.active:disabled{opacity:.7;}
 
 .waiting-list{display:flex;flex-direction:column;}
 .bench-row{display:flex;justify-content:space-between;align-items:center;gap:8px;
