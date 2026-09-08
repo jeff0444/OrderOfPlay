@@ -368,7 +368,7 @@
     save();
     renderPlayers(); renderStats();
     closeModal();
-    document.querySelector('nav.tabs button[data-tab="schedule"]').click();
+    document.querySelector('nav.tabs button[data-tab="roster"]').click();
   }
 
   document.getElementById("modal-start-btn").addEventListener("click", ()=>{
@@ -1048,7 +1048,51 @@
     URL.revokeObjectURL(url);
   });
 
+  // ---------- 主題切換（系統 / 淺色 / 深色） ----------
+  const THEME_KEY = "badminton_scheduler_theme";
+  const THEME_ICONS = {
+    system: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9Z"/><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>',
+    light: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M2 12h2M20 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/></svg>',
+    dark: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>'
+  };
+  const THEME_ORDER = ["system","light","dark"];
+  let themePref = "system";
+
+  function loadThemePref(){
+    try{
+      const v = localStorage.getItem(THEME_KEY);
+      return THEME_ORDER.includes(v) ? v : "system";
+    }catch(e){ return "system"; }
+  }
+  function applyTheme(){
+    const effective = themePref === "system"
+      ? (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+      : themePref;
+    document.documentElement.setAttribute("data-theme", effective);
+    const btn = document.getElementById("btn-theme-toggle");
+    if(btn) btn.innerHTML = THEME_ICONS[themePref];
+  }
+  function initTheme(){
+    themePref = loadThemePref();
+    applyTheme();
+    const btn = document.getElementById("btn-theme-toggle");
+    if(btn){
+      btn.addEventListener("click", ()=>{
+        const idx = THEME_ORDER.indexOf(themePref);
+        themePref = THEME_ORDER[(idx+1) % THEME_ORDER.length];
+        try{ localStorage.setItem(THEME_KEY, themePref); }catch(e){}
+        applyTheme();
+      });
+    }
+    if(window.matchMedia){
+      window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", ()=>{
+        if(themePref === "system") applyTheme();
+      });
+    }
+  }
+
   // ---------- init ----------
+  initTheme();
   renderPlayers();
   renderSchedule();
 })();
