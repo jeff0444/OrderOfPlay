@@ -118,10 +118,15 @@
       gamesPlayed: 0, wins: 0, losses: 0, lastPlayedTick: 0 };
   }
 
+  function nameExists(name){
+    return state.players.some(p=>!p.removed && p.name === name);
+  }
+
   document.getElementById("btn-add-player").addEventListener("click", ()=>{
     const nameEl = document.getElementById("np-name");
     const name = nameEl.value.trim();
     if(!name){ alert("姓名不能是空白"); nameEl.focus(); return; }
+    if(nameExists(name)){ alert("姓名「"+name+"」已經存在，請用不同名稱。"); nameEl.focus(); return; }
     const skillRaw = parseFloat(document.getElementById("np-skill").value);
     const skill = isNaN(skillRaw) ? defaultSkill() : skillRaw;
     const partnerId = document.getElementById("np-partner").value || null;
@@ -165,29 +170,40 @@
   }
 
   // parses multi-line roster text and appends players (used by both the
-  // page's batch-add box and the "開新場" modal's batch box / CSV import)
+  // page's batch-add box and the "開新場" modal's batch box / CSV import).
+  // Names must be unique: duplicates against the existing roster, or repeated
+  // within the same batch, are skipped (first occurrence wins) and reported.
   function addRosterFromText(text, checkedIn){
     const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(l=>l && !l.startsWith("#"));
     const added = [];
+    const skipped = [];
+    const seenNames = new Set(state.players.filter(p=>!p.removed).map(p=>p.name));
     lines.forEach(line=>{
       const parsed = parseRosterLine(line);
       if(!parsed || !parsed.name) return;
+      if(seenNames.has(parsed.name)){
+        skipped.push(parsed.name);
+        return;
+      }
+      seenNames.add(parsed.name);
       const p = makePlayer(parsed.name, parsed.skill, checkedIn);
       state.players.push(p);
       added.push({ player:p, partnerName: parsed.partnerName });
     });
     linkPartnersByName(added);
-    return added;
+    return { added, skipped };
   }
 
   document.getElementById("btn-bulk-add").addEventListener("click", ()=>{
     const raw = document.getElementById("bulk-text").value;
     if(!raw.trim()) return;
-    const added = addRosterFromText(raw, true);
+    const { added, skipped } = addRosterFromText(raw, true);
     document.getElementById("bulk-text").value = "";
     save();
     renderPlayers();
-    alert("已新增 "+added.length+" 位球員");
+    let msg = "已新增 "+added.length+" 位球員";
+    if(skipped.length) msg += "\n以下姓名重複，已略過：" + skipped.join("、");
+    alert(msg);
   });
 
   document.getElementById("btn-export").addEventListener("click", ()=>{
@@ -215,11 +231,13 @@
         if(!lines.length) throw new Error("找不到任何球員資料");
         if(!confirm("匯入將會取代目前的球員名單，並清除上場次數／比分／歷史紀錄，確定要繼續嗎？")) return;
         state.players = [];
-        const added = addRosterFromText(reader.result, true);
+        const { added, skipped } = addRosterFromText(reader.result, true);
         resetParticipationOnly();
         save();
         renderPlayers(); renderSchedule(); renderStats();
-        alert("匯入成功，共 "+added.length+" 位球員");
+        let msg = "匯入成功，共 "+added.length+" 位球員";
+        if(skipped.length) msg += "\n以下姓名重複，已略過：" + skipped.join("、");
+        alert(msg);
       }catch(err){
         alert("匯入失敗：" + err.message);
       }
@@ -259,6 +277,120 @@
     return wrap;
   }
 
+  let editingPlayerId = null;
+
+  function unlinkPartner(p){
+    if(!p.fixedPartnerId) return;
+    const old = playerById(p.fixedPartnerId);
+    if(old) old.fixedPartnerId = null;
+    p.fixedPartnerId = null;
+  }
+  function linkPartner(p, partnerId){
+    unlinkPartner(p);
+    if(!partnerId) return;
+    const partner = playerById(partnerId);
+    if(!partner) return;
+    unlinkPartner(partner);
+    p.fixedPartnerId = partner.id;
+    partner.fixedPartnerId = p.id;
+  }
+
+  function renderEditableRow(p){
+    const tr = document.createElement("tr");
+
+    const nameTd = document.createElement("td");
+    nameTd.textContent = p.name;
+
+    const skillTd = document.createElement("td");
+    const skillInput = document.createElement("input");
+    skillInput.type = "number";
+    skillInput.className = "skill-input";
+    const cfg = sportConfig();
+    skillInput.min = cfg.min; skillInput.max = cfg.max; skillInput.step = cfg.step;
+    skillInput.value = p.skill;
+    skillTd.appendChild(skillInput);
+
+    const partnerTd = document.createElement("td");
+    const partnerSelect = document.createElement("select");
+    const noneOpt = document.createElement("option");
+    noneOpt.value = ""; noneOpt.textContent = "— 無 —";
+    partnerSelect.appendChild(noneOpt);
+    state.players.forEach(q=>{
+      if(q.removed || q.id === p.id) return;
+      const opt = document.createElement("option");
+      opt.value = q.id; opt.textContent = q.name;
+      if(p.fixedPartnerId === q.id) opt.selected = true;
+      partnerSelect.appendChild(opt);
+    });
+    partnerTd.appendChild(partnerSelect);
+
+    const gamesTd = document.createElement("td");
+    gamesTd.textContent = p.gamesPlayed;
+
+    const statusTd = document.createElement("td");
+    statusTd.appendChild(renderStatusButtons(p));
+
+    const actionsTd = document.createElement("td");
+    actionsTd.className = "actions-cell";
+    const saveBtn = document.createElement("button");
+    saveBtn.className = "btn small";
+    saveBtn.textContent = "儲存";
+    saveBtn.addEventListener("click", ()=>{
+      const skillRaw = parseFloat(skillInput.value);
+      p.skill = isNaN(skillRaw) ? p.skill : clampSkill(skillRaw);
+      linkPartner(p, partnerSelect.value || null);
+      editingPlayerId = null;
+      save(); renderPlayers();
+    });
+    const cancelBtn = document.createElement("button");
+    cancelBtn.className = "btn secondary small";
+    cancelBtn.textContent = "取消";
+    cancelBtn.addEventListener("click", ()=>{ editingPlayerId = null; renderPlayers(); });
+    actionsTd.appendChild(saveBtn);
+    actionsTd.appendChild(cancelBtn);
+
+    tr.appendChild(nameTd);
+    tr.appendChild(skillTd);
+    tr.appendChild(partnerTd);
+    tr.appendChild(gamesTd);
+    tr.appendChild(statusTd);
+    tr.appendChild(actionsTd);
+    return tr;
+  }
+
+  function renderPlayerRow(p){
+    const tr = document.createElement("tr");
+    const partner = p.fixedPartnerId ? playerById(p.fixedPartnerId) : null;
+    tr.innerHTML = `
+      <td>${escapeHtml(p.name)}</td>
+      <td><span class="skill">${skillCell(p.skill)}</span></td>
+      <td>${partner ? escapeHtml(partner.name) : '<span class="muted">—</span>'}</td>
+      <td>${p.gamesPlayed}</td>
+      <td></td>
+      <td></td>
+    `;
+    tr.children[4].appendChild(renderStatusButtons(p));
+    const actionsTd = tr.querySelector("td:last-child");
+    actionsTd.className = "actions-cell";
+    const modifyBtn = document.createElement("button");
+    modifyBtn.className = "btn secondary small";
+    modifyBtn.textContent = "修改";
+    modifyBtn.addEventListener("click", ()=>{ editingPlayerId = p.id; renderPlayers(); });
+    const delBtn = document.createElement("button");
+    delBtn.className = "btn danger small";
+    delBtn.textContent = "刪除";
+    delBtn.addEventListener("click", ()=>{
+      if(!confirm("確定要刪除「"+p.name+"」嗎？")) return;
+      unlinkPartner(p);
+      p.removed = true;
+      if(editingPlayerId === p.id) editingPlayerId = null;
+      save(); renderPlayers();
+    });
+    actionsTd.appendChild(modifyBtn);
+    actionsTd.appendChild(delBtn);
+    return tr;
+  }
+
   function renderPlayers(){
     refreshPartnerSelect();
     applySkillInputBounds(false);
@@ -270,33 +402,9 @@
     const visible = state.players.filter(p=>!p.removed);
     document.getElementById("player-empty").style.display = visible.length ? "none":"block";
     document.getElementById("player-count").textContent = visible.length ? "（共 "+visible.length+" 人）" : "";
+    if(editingPlayerId && !visible.some(p=>p.id === editingPlayerId)) editingPlayerId = null;
     visible.forEach(p=>{
-      const tr = document.createElement("tr");
-      const partner = p.fixedPartnerId ? playerById(p.fixedPartnerId) : null;
-      tr.innerHTML = `
-        <td>${escapeHtml(p.name)}</td>
-        <td><span class="skill">${skillCell(p.skill)}</span></td>
-        <td>${partner ? escapeHtml(partner.name) : '<span class="muted">—</span>'}</td>
-        <td></td>
-        <td>${p.gamesPlayed}</td>
-        <td></td>
-      `;
-      tr.children[3].appendChild(renderStatusButtons(p));
-      const actionsTd = tr.querySelector("td:last-child");
-      const delBtn = document.createElement("button");
-      delBtn.className = "btn danger small";
-      delBtn.textContent = "刪除";
-      delBtn.addEventListener("click", ()=>{
-        if(!confirm("確定要刪除「"+p.name+"」嗎？")) return;
-        if(p.fixedPartnerId){
-          const partner = playerById(p.fixedPartnerId);
-          if(partner) partner.fixedPartnerId = null;
-        }
-        p.removed = true;
-        save(); renderPlayers();
-      });
-      actionsTd.appendChild(delBtn);
-      tbody.appendChild(tr);
+      tbody.appendChild(editingPlayerId === p.id ? renderEditableRow(p) : renderPlayerRow(p));
     });
   }
 
@@ -358,17 +466,19 @@
     state.history = [];
   }
 
-  function finishOpeningSession(sport){
+  function finishOpeningSession(sport, extraSkipped){
     const bulkText = document.getElementById("modal-bulk-text").value;
     const newCourtCount = Math.max(1, parseInt(document.getElementById("modal-courts").value,10) || 1);
     const newMode = document.getElementById("modal-mode").value;
     state.sport = sport; // so any bulk text below clamps against the newly chosen sport
-    if(bulkText.trim()) addRosterFromText(bulkText, false);
+    let skipped = (extraSkipped || []).slice();
+    if(bulkText.trim()) skipped = skipped.concat(addRosterFromText(bulkText, false).skipped);
     startNewSession(sport, newCourtCount, newMode);
     save();
     renderPlayers(); renderStats();
     closeModal();
-    document.querySelector('nav.tabs button[data-tab="schedule"]').click();
+    document.querySelector('nav.tabs button[data-tab="roster"]').click();
+    if(skipped.length) alert("以下姓名重複，已略過：" + skipped.join("、"));
   }
 
   document.getElementById("modal-start-btn").addEventListener("click", ()=>{
@@ -383,11 +493,12 @@
       reader.onload = ()=>{
         state.sport = sport;
         const lines = reader.result.split(/\r?\n/).map(l=>l.trim()).filter(l=>l && !l.startsWith("#"));
+        let fileSkipped = [];
         if(lines.length){
           state.players = [];
-          addRosterFromText(reader.result, false);
+          fileSkipped = addRosterFromText(reader.result, false).skipped;
         }
-        finishOpeningSession(sport);
+        finishOpeningSession(sport, fileSkipped);
       };
       reader.readAsText(file);
     } else {
@@ -415,9 +526,14 @@
   }
 
   function fairnessScore(unit){
-    const gp = Math.min(...unit.members.map(m=>m.gamesPlayed));
-    const waited = state.globalTick - Math.max(...unit.members.map(m=>m.lastPlayedTick));
-    return gp * 1000 - waited; // fewer games played first; among ties, longer-waited first
+    // fewer games played always goes first; players with the same games-played
+    // count are true ties here (not broken by wait time), so the fill-selection
+    // search below is free to pick among them for skill balance / fewer repeats,
+    // with wait time folded in as a soft (not absolute) preference.
+    return Math.min(...unit.members.map(m=>m.gamesPlayed));
+  }
+  function unitWaitScore(unit){
+    return state.globalTick - Math.max(...unit.members.map(m=>m.lastPlayedTick));
   }
 
   function repeatPenalty(matches){
@@ -479,7 +595,8 @@
 
   // players currently on a court OR already queued in another pending match — never
   // double-booked into two matches at once
-  function committedPlayerIds(){
+  function committedPlayerIds(excludePendingIds){
+    const excludeSet = new Set(excludePendingIds || []);
     const set = new Set();
     state.courts.forEach(c=>{
       if(c.currentMatch){
@@ -488,13 +605,14 @@
       }
     });
     state.pending.forEach(m=>{
+      if(excludeSet.has(m.id)) return;
       m.teamA.forEach(id=>set.add(id));
       m.teamB.forEach(id=>set.add(id));
     });
     return set;
   }
-  function eligiblePoolForPending(){
-    const committed = committedPlayerIds();
+  function eligiblePoolForPending(excludePendingIds){
+    const committed = committedPlayerIds(excludePendingIds);
     return eligiblePlayers().filter(p=>!committed.has(p.id));
   }
 
@@ -504,10 +622,10 @@
   // filled automatically from the rest of the eligible pool, balancing skill and avoiding
   // recent repeat opponents/partners. Leaving everyone on "random" reproduces the old
   // fully-automatic behavior; pinning everyone reproduces fully-manual.
-  function buildMatchFromSides(matchMode, teamOf){
+  function buildMatchFromSides(matchMode, teamOf, excludePendingIds){
     const need = matchMode === "doubles" ? 4 : 2;
     const halfNeed = need / 2;
-    const pool = eligiblePoolForPending();
+    const pool = eligiblePoolForPending(excludePendingIds);
     const poolIds = new Set(pool.map(p=>p.id));
 
     const forcedLeft = new Set(), forcedRight = new Set();
@@ -562,11 +680,14 @@
       if(!split) continue;
       const teamA = forcedLeftIds.concat(split.left.flatMap(u=>u.members.map(m=>m.id)));
       const teamB = forcedRightIds.concat(split.right.flatMap(u=>u.members.map(m=>m.id)));
-      const penalty = teamPenalty(teamA, teamB);
+      let penalty = teamPenalty(teamA, teamB);
+      // among players with equal games-played (real ties from fairnessScore), softly
+      // prefer whoever has waited longer — but this no longer overrides skill balance
+      // or repeat-avoidance the way an absolute wait-based sort key used to.
+      filled.forEach(u=>{ penalty -= unitWaitScore(u) * 0.02; });
       if(penalty < bestPenalty){
         bestPenalty = penalty;
         best = { teamA, teamB };
-        if(penalty === 0) break;
       }
     }
     if(!best) return { error: "目前可上場人數不足或湊不出這一場，請調整名單或分隊。" };
@@ -581,13 +702,18 @@
     renderSchedule();
   });
 
-  function removeCourt(courtIndex){
+  // Arms/disarms a court for removal — never deletes outright, so the action
+  // can always be undone via "取消移除". A court with an active match is
+  // actually removed once its score gets confirmed (see confirmScore); an
+  // empty court needs the separate explicit "確定移除" to actually go away.
+  function toggleCourtRemoval(courtIndex){
     const court = state.courts[courtIndex];
-    if(court.currentMatch && !court.currentMatch.done){
-      court.retiring = true;
-    } else {
-      state.courts.splice(courtIndex, 1);
-    }
+    court.retiring = !court.retiring;
+    save();
+    renderSchedule();
+  }
+  function confirmRemoveEmptyCourt(courtIndex){
+    state.courts.splice(courtIndex, 1);
     save();
     renderSchedule();
   }
@@ -622,8 +748,9 @@
     match.teamA.concat(match.teamB).forEach(id=>{
       const p = playerById(id);
       if(!p) return;
-      p.gamesPlayed += 1;
-      p.lastPlayedTick = state.globalTick;
+      p.lastPlayedTick = state.globalTick; // no longer "waiting" once play starts
+      // gamesPlayed only counts once a score is actually confirmed (see confirmScore) —
+      // a match abandoned mid-way via 中途下場 shouldn't count as played.
     });
     const newMatch = { matchId: uid(), teamA: match.teamA, teamB: match.teamB, scoreA:null, scoreB:null, done:false, winner:null };
     applyHistoryCounts([newMatch], 1);
@@ -659,8 +786,8 @@
     m.done = true;
     const winners = m.winner === 'A' ? m.teamA : m.teamB;
     const losers = m.winner === 'A' ? m.teamB : m.teamA;
-    winners.forEach(id=>{ const p = playerById(id); if(p) p.wins += 1; });
-    losers.forEach(id=>{ const p = playerById(id); if(p) p.losses += 1; });
+    winners.forEach(id=>{ const p = playerById(id); if(p){ p.wins += 1; p.gamesPlayed += 1; } });
+    losers.forEach(id=>{ const p = playerById(id); if(p){ p.losses += 1; p.gamesPlayed += 1; } });
     pushOrUpdateHistory(court, m);
     court.currentMatch = null; // score confirmed -> court is released immediately
     if(court.retiring){
@@ -672,9 +799,31 @@
     renderPlayers();
   }
 
+  function abandonMatch(courtIndex){
+    const court = state.courts[courtIndex];
+    const m = court.currentMatch;
+    if(!m) return;
+    if(!confirm("確定要讓這場比賽中途下場嗎？（不會記錄比分與勝負，場地會立刻釋出）")) return;
+    court.currentMatch = null;
+    if(court.retiring){
+      const idx = state.courts.indexOf(court);
+      if(idx >= 0) state.courts.splice(idx, 1);
+    }
+    save();
+    renderSchedule();
+    renderPlayers();
+  }
+
   // ---------- Pending-match builder UI ----------
   function startPendingBuild(){
-    genUI = { matchMode: state.mode, teamOf: new Map() };
+    genUI = { matchMode: state.mode, teamOf: new Map(), editingId: null };
+    renderSchedule();
+  }
+  function startEditPendingBuild(match){
+    const teamOf = new Map();
+    match.teamA.forEach(id=>teamOf.set(id,"left"));
+    match.teamB.forEach(id=>teamOf.set(id,"right"));
+    genUI = { matchMode: match.matchMode, teamOf, editingId: match.id };
     renderSchedule();
   }
   function cancelPendingBuild(){
@@ -682,22 +831,97 @@
     renderSchedule();
   }
   function confirmPendingBuild(){
-    const { matchMode, teamOf } = genUI;
-    const result = buildMatchFromSides(matchMode, teamOf);
+    const { matchMode, teamOf, editingId } = genUI;
+    const excludeIds = editingId ? [editingId] : [];
+    const result = buildMatchFromSides(matchMode, teamOf, excludeIds);
     if(result.error){ alert(result.error); return; }
-    state.pending.push({ id: uid(), matchMode, teamA: result.teamA, teamB: result.teamB });
+    if(editingId){
+      const m = state.pending.find(x=>x.id === editingId);
+      if(m){ m.matchMode = matchMode; m.teamA = result.teamA; m.teamB = result.teamB; }
+    } else {
+      state.pending.push({ id: uid(), matchMode, teamA: result.teamA, teamB: result.teamB });
+    }
     state.mode = matchMode;
     genUI = null;
     save();
     renderSchedule();
   }
 
+  // Resolves each pool player's side, folding in fixed partners that get
+  // auto-pulled onto their partner's side in doubles (marked `auto:true`).
+  // Only explicit ("random"/"left"/"right" picks) actually live in
+  // genUI.teamOf — the auto entries are derived fresh on every render, so
+  // setting the anchor player back to "random" immediately frees the partner.
+  function effectiveAssignments(pool){
+    const map = new Map();
+    pool.forEach(p=>{
+      const side = genUI.teamOf.get(p.id);
+      if(side) map.set(p.id, { side, auto:false });
+    });
+    if(genUI.matchMode === "doubles"){
+      const poolIds = new Set(pool.map(p=>p.id));
+      [...map.entries()].forEach(([id, entry])=>{
+        const p = playerById(id);
+        if(!p || !p.fixedPartnerId || !poolIds.has(p.fixedPartnerId)) return;
+        if(!map.has(p.fixedPartnerId)){
+          map.set(p.fixedPartnerId, { side: entry.side, auto:true });
+        }
+      });
+    }
+    return map;
+  }
+  // how many of a side's slots player p would take up if assigned there —
+  // 2 when they have a fixed partner also in the pool (doubles pulls the
+  // partner along), 1 otherwise.
+  function unitSize(p, poolIds){
+    return (genUI.matchMode === "doubles" && p.fixedPartnerId && poolIds.has(p.fixedPartnerId)) ? 2 : 1;
+  }
+
+  function renderTeamsPreview(halfNeed, pool, effMap){
+    const leftIds = [], rightIds = [];
+    pool.forEach(p=>{
+      const eff = effMap.get(p.id);
+      if(eff && eff.side === "left") leftIds.push(p.id);
+      else if(eff && eff.side === "right") rightIds.push(p.id);
+    });
+    const wrap = document.createElement("div");
+    wrap.className = "teams";
+    function teamBox(cls, label, ids){
+      const box = document.createElement("div");
+      box.className = "team " + cls;
+      let html = `<div class="muted" style="margin-bottom:4px;font-weight:700;">${label} ${ids.length}/${halfNeed}</div>`;
+      if(ids.length){
+        html += ids.map(id=>`<div class="p">${playerChip(id)}</div>`).join("");
+      }
+      if(ids.length < halfNeed){
+        html += `<div class="muted" style="font-size:12px;">（尚有 ${halfNeed-ids.length} 位待補，確認後自動安排）</div>`;
+      }
+      box.innerHTML = html;
+      return box;
+    }
+    wrap.appendChild(teamBox("a", "左隊", leftIds));
+    const vs = document.createElement("div");
+    vs.className = "vs";
+    vs.textContent = "VS";
+    wrap.appendChild(vs);
+    wrap.appendChild(teamBox("b", "右隊", rightIds));
+    return wrap;
+  }
+
   function renderGenerationPanel(){
     const halfNeed = (genUI.matchMode === "doubles" ? 4 : 2) / 2;
-    const pool = eligiblePoolForPending().slice()
-      .sort((a,b)=> fairnessScore({members:[a]}) - fairnessScore({members:[b]}));
+    const isEditing = !!genUI.editingId;
+    const excludeIds = isEditing ? [genUI.editingId] : [];
+    const pool = orderWithPartnerGrouping(eligiblePoolForPending(excludeIds));
     const panel = document.createElement("div");
     panel.className = "gen-panel";
+
+    const heading = document.createElement("div");
+    heading.className = "muted";
+    heading.style.marginBottom = "8px";
+    heading.style.fontWeight = "700";
+    heading.textContent = isEditing ? "修改預排的這一輪" : "預排新的一輪";
+    panel.appendChild(heading);
 
     const modeField = document.createElement("div");
     modeField.className = "field";
@@ -720,6 +944,13 @@
     modeField.appendChild(modeSelect);
     panel.appendChild(modeField);
 
+    const poolIds = new Set(pool.map(p=>p.id));
+    const effMap = effectiveAssignments(pool);
+    let leftCount = 0, rightCount = 0;
+    effMap.forEach(({side})=>{ if(side === "left") leftCount++; else if(side === "right") rightCount++; });
+
+    panel.appendChild(renderTeamsPreview(halfNeed, pool, effMap));
+
     const list = document.createElement("div");
     list.className = "pick-list";
     if(!pool.length){
@@ -729,18 +960,32 @@
       const row = document.createElement("div");
       row.className = "pick-row";
       const info = document.createElement("span");
-      info.className = "info";
-      info.textContent = p.name+" "+skillDisplay(p.skill)+" · 已上場"+p.gamesPlayed+"次";
+      info.className = "info player-cols";
+      info.innerHTML = playerColumnsHtml(p);
       row.appendChild(info);
       const toggle = document.createElement("div");
       toggle.className = "team-toggle";
-      const current = genUI.teamOf.get(p.id) || "random";
+      const eff = effMap.get(p.id);
+      const isAuto = !!(eff && eff.auto);
+      const current = isAuto ? eff.side : (genUI.teamOf.get(p.id) || "random");
+      const size = unitSize(p, poolIds);
+      const remaining = { left: halfNeed - leftCount, right: halfNeed - rightCount };
       [["random","隨機"],["left","左隊"],["right","右隊"]].forEach(([val,label])=>{
         const b = document.createElement("button");
         b.type = "button";
         b.textContent = label;
         if(current === val) b.classList.add("active");
+        let disabled = false;
+        if(isAuto){
+          disabled = true; // controlled entirely by the anchor partner
+        } else if(val !== "random" && val !== current){
+          disabled = size > remaining[val];
+        }
+        if(disabled) b.disabled = true;
+        if(isAuto) b.title = "搭檔已被指定上場，跟著一起入隊；把搭檔改回「隨機」才能單獨調整";
+        else if(disabled) b.title = "這隊人數已滿，請先讓其他人讓出名額";
         b.addEventListener("click", ()=>{
+          if(disabled) return;
           if(val === "random") genUI.teamOf.delete(p.id);
           else genUI.teamOf.set(p.id, val);
           renderSchedule();
@@ -752,23 +997,17 @@
     });
     panel.appendChild(list);
 
-    let leftCount = 0, rightCount = 0;
-    pool.forEach(p=>{
-      const side = genUI.teamOf.get(p.id);
-      if(side === "left") leftCount++;
-      else if(side === "right") rightCount++;
-    });
-    const countInfo = document.createElement("div");
-    countInfo.className = "muted";
-    countInfo.style.marginBottom = "8px";
-    countInfo.textContent = "左隊已指定 "+leftCount+"/"+halfNeed+"　右隊已指定 "+rightCount+"/"+halfNeed+"　其餘按「確認預排」後自動補上";
-    panel.appendChild(countInfo);
+    const noteInfo = document.createElement("div");
+    noteInfo.className = "muted";
+    noteInfo.style.margin = "8px 0";
+    noteInfo.textContent = "留「隨機」的人由系統自動決定要不要上場、上哪一隊；指定「左隊」「右隊」的人一定照指定上場。";
+    panel.appendChild(noteInfo);
 
     const actionRow = document.createElement("div");
     actionRow.className = "row";
     const confirmBtn = document.createElement("button");
     confirmBtn.className = "btn small";
-    confirmBtn.textContent = "確認預排";
+    confirmBtn.textContent = isEditing ? "確認修改" : "確認預排";
     confirmBtn.addEventListener("click", confirmPendingBuild);
     const cancelBtn = document.createElement("button");
     cancelBtn.className = "btn secondary small";
@@ -779,6 +1018,44 @@
     panel.appendChild(actionRow);
 
     return panel;
+  }
+
+  // player info laid out as aligned columns: 姓名 | 程度 | 上場數 | 搭檔
+  // (no headers — just consistent spacing so rows read like a table)
+  function playerColumnsHtml(p){
+    const partner = p.fixedPartnerId ? playerById(p.fixedPartnerId) : null;
+    return `
+      <span class="col-name">${escapeHtml(p.name)}</span>
+      <span class="col-skill muted">${skillDisplay(p.skill)}</span>
+      <span class="col-games muted">${p.gamesPlayed}場</span>
+      <span class="col-partner muted">${partner ? "- "+escapeHtml(partner.name) : ""}</span>
+    `;
+  }
+
+  // sorts players by games played asc, then skill asc — keeping fixed-partner
+  // pairs adjacent, anchored at whichever partner has the lower skill (the
+  // other partner is placed right after, regardless of their own stats).
+  // Only pairs where both members are present in `players` are grouped.
+  function orderWithPartnerGrouping(players){
+    const sorted = players.slice().sort((a,b)=> a.gamesPlayed - b.gamesPlayed || a.skill - b.skill);
+    const byId = new Map(sorted.map(p=>[p.id, p]));
+    const consumed = new Set();
+    const ordered = [];
+    sorted.forEach(p=>{
+      if(consumed.has(p.id)) return;
+      const partner = p.fixedPartnerId ? byId.get(p.fixedPartnerId) : null;
+      if(partner && !consumed.has(partner.id)){
+        const selfIsAnchor = p.skill < partner.skill ||
+          (p.skill === partner.skill && p.gamesPlayed <= partner.gamesPlayed);
+        if(!selfIsAnchor) return; // will be emitted right after its anchor
+        ordered.push(p, partner);
+        consumed.add(p.id); consumed.add(partner.id);
+      } else {
+        ordered.push(p);
+        consumed.add(p.id);
+      }
+    });
+    return ordered;
   }
 
   // ---------- Schedule tab rendering ----------
@@ -826,7 +1103,13 @@
       if(a === b){ alert("比分不可相同，請確認"); return; }
       confirmScore(index, a, b);
     });
+    const abandonBtn = document.createElement("button");
+    abandonBtn.className = "btn danger small";
+    abandonBtn.textContent = "中途下場";
+    abandonBtn.style.marginLeft = "auto";
+    abandonBtn.addEventListener("click", ()=> abandonMatch(index));
     row.appendChild(scoreA); row.appendChild(sep); row.appendChild(scoreB); row.appendChild(btn);
+    row.appendChild(abandonBtn);
     return row;
   }
 
@@ -841,15 +1124,43 @@
     label.className = "muted";
     label.textContent = "場地";
     head.appendChild(label);
+    const numberText = document.createElement("span");
+    numberText.className = "court-number-text";
+    numberText.textContent = court.number;
+    head.appendChild(numberText);
     const numberInput = document.createElement("input");
     numberInput.className = "court-number-input";
     numberInput.value = court.number;
-    numberInput.addEventListener("change", ()=>{
-      court.number = numberInput.value.trim() || court.number;
-      numberInput.value = court.number;
-      save();
-    });
+    numberInput.hidden = true;
     head.appendChild(numberInput);
+    const numberEditBtn = document.createElement("button");
+    numberEditBtn.className = "btn secondary small";
+    numberEditBtn.textContent = "修改場地名稱";
+    function confirmNumberEdit(){
+      court.number = numberInput.value.trim() || court.number;
+      numberText.textContent = court.number;
+      numberInput.value = court.number;
+      numberInput.hidden = true;
+      numberText.hidden = false;
+      numberEditBtn.textContent = "修改場地名稱";
+      save();
+      renderSchedule();
+    }
+    numberEditBtn.addEventListener("click", ()=>{
+      if(numberInput.hidden){
+        numberText.hidden = true;
+        numberInput.hidden = false;
+        numberInput.focus();
+        numberInput.select();
+        numberEditBtn.textContent = "確定";
+      } else {
+        confirmNumberEdit();
+      }
+    });
+    numberInput.addEventListener("keydown", (e)=>{
+      if(e.key === "Enter"){ e.preventDefault(); confirmNumberEdit(); }
+    });
+    head.appendChild(numberEditBtn);
     const played = document.createElement("span");
     played.className = "muted";
     played.textContent = "已進行 "+court.roundNumber+" 場";
@@ -857,14 +1168,21 @@
     if(court.retiring){
       const tag = document.createElement("span");
       tag.className = "badge-retiring";
-      tag.textContent = "最後一場";
+      tag.textContent = m ? "最後一場" : "即將移除";
       head.appendChild(tag);
     }
     const removeBtn = document.createElement("button");
     removeBtn.className = "btn danger small";
-    removeBtn.textContent = "移除";
-    removeBtn.addEventListener("click", ()=> removeCourt(index));
+    removeBtn.textContent = court.retiring ? "取消移除" : "移除";
+    removeBtn.addEventListener("click", ()=> toggleCourtRemoval(index));
     head.appendChild(removeBtn);
+    if(court.retiring && !m){
+      const confirmBtn = document.createElement("button");
+      confirmBtn.className = "btn danger small";
+      confirmBtn.textContent = "確定移除";
+      confirmBtn.addEventListener("click", ()=> confirmRemoveEmptyCourt(index));
+      head.appendChild(confirmBtn);
+    }
     div.appendChild(head);
 
     if(m){
@@ -872,7 +1190,12 @@
       teamsWrap.innerHTML = teamsHtml(m);
       div.appendChild(teamsWrap);
       div.appendChild(renderScoreRow(index));
-    } else if(!court.retiring){
+    } else if(court.retiring){
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "此場地即將移除，按「確定移除」立即移除，或「取消移除」保留。";
+      div.appendChild(empty);
+    } else {
       const empty = document.createElement("div");
       empty.className = "empty";
       empty.textContent = "空場地，可在下方「下一輪預排」指派球員入場。";
@@ -888,6 +1211,7 @@
     document.getElementById("pending-empty").style.display = state.pending.length ? "none" : "block";
     const freeCourts = state.courts.map((c,i)=>({c,i})).filter(x=>!x.c.currentMatch);
     state.pending.forEach(match=>{
+      if(genUI && genUI.editingId === match.id) return; // being edited below, don't show twice
       const div = document.createElement("div");
       div.className = "court";
       const teamsWrap = document.createElement("div");
@@ -895,7 +1219,7 @@
       div.appendChild(teamsWrap);
 
       const actionRow = document.createElement("div");
-      actionRow.className = "row";
+      actionRow.className = "row pending-actions";
       if(freeCourts.length){
         const select = document.createElement("select");
         select.style.width = "auto";
@@ -918,6 +1242,12 @@
         note.textContent = "目前沒有空場地，等場地釋出後才能指派上場";
         actionRow.appendChild(note);
       }
+      const modifyBtn = document.createElement("button");
+      modifyBtn.className = "btn secondary small";
+      modifyBtn.textContent = "修改";
+      modifyBtn.addEventListener("click", ()=> startEditPendingBuild(match));
+      actionRow.appendChild(modifyBtn);
+
       const removeBtn = document.createElement("button");
       removeBtn.className = "btn danger small";
       removeBtn.textContent = "移除";
@@ -954,21 +1284,30 @@
     });
     const entries = [];
     state.players.forEach(p=>{
-      if(p.removed || onCourt.has(p.id)) return;
-      let label;
-      if(pendingIds.has(p.id)) label = "已預排";
-      else if(!p.checkedIn) label = "未報到";
-      else if(p.left) label = "離場";
-      else if(p.resting) label = "休息";
-      else label = "候補";
-      entries.push({ p, label });
+      if(p.removed || onCourt.has(p.id) || !p.checkedIn) return;
+      let label, cls;
+      if(pendingIds.has(p.id)){ label = "已預排"; cls = "pending"; }
+      else if(p.left){ label = "離場"; cls = "leave"; }
+      else if(p.resting){ label = "休息"; cls = "rest"; }
+      else { label = "候補"; cls = "bench"; }
+      entries.push({ p, label, cls });
     });
-    document.getElementById("waiting-empty").style.display = entries.length ? "none":"block";
-    entries.forEach(({p, label})=>{
-      const chip = document.createElement("span");
-      chip.className = "chip";
-      chip.textContent = p.name+" "+skillDisplay(p.skill)+" · 已上場"+p.gamesPlayed+"次 ("+label+")";
-      wrap.appendChild(chip);
+    const entryById = new Map(entries.map(e=>[e.p.id, e]));
+    const ordered = orderWithPartnerGrouping(entries.map(e=>e.p)).map(p=>entryById.get(p.id));
+
+    document.getElementById("waiting-empty").style.display = ordered.length ? "none":"block";
+    ordered.forEach(({p, label, cls})=>{
+      const row = document.createElement("div");
+      row.className = "bench-row";
+      const info = document.createElement("span");
+      info.className = "player-cols";
+      info.innerHTML = playerColumnsHtml(p);
+      const tag = document.createElement("span");
+      tag.className = "bench-tag " + cls;
+      tag.textContent = label;
+      row.appendChild(info);
+      row.appendChild(tag);
+      wrap.appendChild(row);
     });
   }
 
@@ -1048,7 +1387,51 @@
     URL.revokeObjectURL(url);
   });
 
+  // ---------- 主題切換（系統 / 淺色 / 深色） ----------
+  const THEME_KEY = "badminton_scheduler_theme";
+  const THEME_ICONS = {
+    system: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9Z"/><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>',
+    light: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M2 12h2M20 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/></svg>',
+    dark: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>'
+  };
+  const THEME_ORDER = ["system","light","dark"];
+  let themePref = "system";
+
+  function loadThemePref(){
+    try{
+      const v = localStorage.getItem(THEME_KEY);
+      return THEME_ORDER.includes(v) ? v : "system";
+    }catch(e){ return "system"; }
+  }
+  function applyTheme(){
+    const effective = themePref === "system"
+      ? (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+      : themePref;
+    document.documentElement.setAttribute("data-theme", effective);
+    const btn = document.getElementById("btn-theme-toggle");
+    if(btn) btn.innerHTML = THEME_ICONS[themePref];
+  }
+  function initTheme(){
+    themePref = loadThemePref();
+    applyTheme();
+    const btn = document.getElementById("btn-theme-toggle");
+    if(btn){
+      btn.addEventListener("click", ()=>{
+        const idx = THEME_ORDER.indexOf(themePref);
+        themePref = THEME_ORDER[(idx+1) % THEME_ORDER.length];
+        try{ localStorage.setItem(THEME_KEY, themePref); }catch(e){}
+        applyTheme();
+      });
+    }
+    if(window.matchMedia){
+      window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", ()=>{
+        if(themePref === "system") applyTheme();
+      });
+    }
+  }
+
   // ---------- init ----------
+  initTheme();
   renderPlayers();
   renderSchedule();
 })();
