@@ -440,11 +440,7 @@
 
   function startNewSession(sport, courtCount, mode){
     state.sport = sport;
-    state.players.forEach(p=>{
-      p.checkedIn = false; p.resting = false; p.left = false;
-      p.gamesPlayed = 0; p.wins = 0; p.losses = 0; p.lastPlayedTick = 0;
-      p.skill = clampSkill(p.skill);
-    });
+    state.players = [];
     state.mode = mode;
     state.courts = [];
     state.nextCourtNumber = 1;
@@ -466,14 +462,16 @@
     state.history = [];
   }
 
-  function finishOpeningSession(sport, extraSkipped){
+  // Clears everything — including the player roster — then (re)builds the roster from
+  // whatever the modal's file import / batch-paste box supplied, in that order.
+  function finishOpeningSession(sport, fileText){
     const bulkText = document.getElementById("modal-bulk-text").value;
     const newCourtCount = Math.max(1, parseInt(document.getElementById("modal-courts").value,10) || 1);
     const newMode = document.getElementById("modal-mode").value;
-    state.sport = sport; // so any bulk text below clamps against the newly chosen sport
-    let skipped = (extraSkipped || []).slice();
+    startNewSession(sport, newCourtCount, newMode); // wipes players + all session state first
+    let skipped = [];
+    if(fileText) skipped = skipped.concat(addRosterFromText(fileText, false).skipped);
     if(bulkText.trim()) skipped = skipped.concat(addRosterFromText(bulkText, false).skipped);
-    startNewSession(sport, newCourtCount, newMode);
     save();
     renderPlayers(); renderStats();
     closeModal();
@@ -482,27 +480,19 @@
   }
 
   document.getElementById("modal-start-btn").addEventListener("click", ()=>{
-    const anyProgress = state.courts.some(c=>c.currentMatch) || state.pending.length > 0 || state.history.length > 0;
+    const anyProgress = state.players.length > 0 || state.courts.some(c=>c.currentMatch) ||
+      state.pending.length > 0 || state.history.length > 0;
     if(anyProgress){
-      if(!confirm("開新場會清除目前的上場次數、比分與歷史紀錄（球員名單會保留），確定要開始新的一場嗎？")) return;
+      if(!confirm("開新場會清除目前的球員名單、上場次數、比分與歷史紀錄，確定要開始新的一場嗎？")) return;
     }
     const sport = document.getElementById("modal-sport").value;
     const file = document.getElementById("modal-file-import").files[0];
     if(file){
       const reader = new FileReader();
-      reader.onload = ()=>{
-        state.sport = sport;
-        const lines = reader.result.split(/\r?\n/).map(l=>l.trim()).filter(l=>l && !l.startsWith("#"));
-        let fileSkipped = [];
-        if(lines.length){
-          state.players = [];
-          fileSkipped = addRosterFromText(reader.result, false).skipped;
-        }
-        finishOpeningSession(sport, fileSkipped);
-      };
+      reader.onload = ()=>{ finishOpeningSession(sport, reader.result); };
       reader.readAsText(file);
     } else {
-      finishOpeningSession(sport);
+      finishOpeningSession(sport, null);
     }
   });
 
