@@ -62,11 +62,17 @@ code{background:var(--panel);border-radius:4px;padding:1px 5px;font-size:12px;}
 table{width:100%;border-collapse:collapse;font-size:13px;}
 th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line);}
 th{color:var(--sub);font-weight:600;font-size:12px;}
-tfoot td{border-bottom:none;padding-top:10px;min-width:100px;}
-tfoot input,tfoot select{font-size:13px;padding:6px 8px;}
 input.np-name-input{width:80px;min-width:0;}
 input.skill-input{width:56px;min-width:0;}
 .skill{color:var(--accent);font-weight:700;}
+
+.add-player-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px;
+  padding-top:12px;border-top:1px dashed var(--line);}
+.add-player-row input,.add-player-row select{width:auto;font-size:13px;padding:7px 9px;}
+
+.btn.success{background:var(--good);color:#fff;}
+.btn.icon-btn{display:inline-flex;align-items:center;justify-content:center;padding:6px;line-height:0;flex:0 0 auto;}
+.btn.icon-btn.round{border-radius:999px;width:32px;height:32px;padding:0;}
 
 .actions-cell{display:flex;gap:6px;flex-wrap:wrap;}
 .status-btns{display:flex;gap:4px;flex-wrap:wrap;}
@@ -92,7 +98,7 @@ input.skill-input{width:56px;min-width:0;}
 .court.retiring{border:2px solid var(--bad);}
 .court h3{margin:0 0 8px;font-size:13px;color:var(--sub);display:flex;justify-content:space-between;align-items:center;}
 .court-head{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;font-size:13px;}
-.court-head .btn.danger{margin-left:auto;}
+.court-head .court-remove-btn{margin-left:auto;}
 .court-number-text{font-weight:700;font-size:14px;}
 .court-number-input{width:72px;flex:0 0 auto;padding:4px 6px;font-size:14px;font-weight:700;}
 .badge-retiring{background:var(--bad);color:#fff;font-size:10px;font-weight:700;

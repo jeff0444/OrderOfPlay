@@ -76,6 +76,18 @@
   function playerById(id){ return state.players.find(p => p.id === id); }
   function pairKey(a,b){ return [a,b].sort().join("|"); }
 
+  // ---------- shared line icons (stroke=currentColor so buttons pick up their own color) ----------
+  const ICON_PATHS = {
+    pencil: '<path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+    trash: '<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
+    check: '<path d="M20 6 9 17l-5-5"/>',
+    undo: '<path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/>'
+  };
+  function iconSvg(name, size){
+    size = size || 16;
+    return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICON_PATHS[name]}</svg>`;
+  }
+
   // ---------- Tabs ----------
   document.querySelectorAll("nav.tabs button").forEach(btn=>{
     btn.addEventListener("click", ()=>{
@@ -93,7 +105,7 @@
   function refreshPartnerSelect(){
     const sel = document.getElementById("np-partner");
     const prev = sel.value;
-    sel.innerHTML = '<option value="">— 無 —</option>';
+    sel.innerHTML = '<option value="">無搭檔</option>';
     state.players.forEach(p=>{
       if(p.removed) return;
       const opt = document.createElement("option");
@@ -109,7 +121,7 @@
     const el = document.getElementById("np-skill");
     if(!el) return;
     el.min = cfg.min; el.max = cfg.max; el.step = cfg.step;
-    if(resetValue) el.value = defaultSkill();
+    if(resetValue) el.value = ""; // leave blank so the "程度" placeholder shows; defaultSkill() is still used as a fallback on submit
   }
 
   function makePlayer(name, skill, checkedIn){
@@ -313,7 +325,7 @@
     const partnerTd = document.createElement("td");
     const partnerSelect = document.createElement("select");
     const noneOpt = document.createElement("option");
-    noneOpt.value = ""; noneOpt.textContent = "— 無 —";
+    noneOpt.value = ""; noneOpt.textContent = "無搭檔";
     partnerSelect.appendChild(noneOpt);
     state.players.forEach(q=>{
       if(q.removed || q.id === p.id) return;
@@ -323,9 +335,6 @@
       partnerSelect.appendChild(opt);
     });
     partnerTd.appendChild(partnerSelect);
-
-    const gamesTd = document.createElement("td");
-    gamesTd.textContent = p.gamesPlayed;
 
     const statusTd = document.createElement("td");
     statusTd.appendChild(renderStatusButtons(p));
@@ -352,7 +361,6 @@
     tr.appendChild(nameTd);
     tr.appendChild(skillTd);
     tr.appendChild(partnerTd);
-    tr.appendChild(gamesTd);
     tr.appendChild(statusTd);
     tr.appendChild(actionsTd);
     return tr;
@@ -365,20 +373,21 @@
       <td>${escapeHtml(p.name)}</td>
       <td><span class="skill">${skillCell(p.skill)}</span></td>
       <td>${partner ? escapeHtml(partner.name) : '<span class="muted">—</span>'}</td>
-      <td>${p.gamesPlayed}</td>
       <td></td>
       <td></td>
     `;
-    tr.children[4].appendChild(renderStatusButtons(p));
+    tr.children[3].appendChild(renderStatusButtons(p));
     const actionsTd = tr.querySelector("td:last-child");
     actionsTd.className = "actions-cell";
     const modifyBtn = document.createElement("button");
-    modifyBtn.className = "btn secondary small";
-    modifyBtn.textContent = "修改";
+    modifyBtn.className = "btn secondary small icon-btn";
+    modifyBtn.innerHTML = iconSvg("pencil");
+    modifyBtn.title = "修改"; modifyBtn.setAttribute("aria-label", "修改");
     modifyBtn.addEventListener("click", ()=>{ editingPlayerId = p.id; renderPlayers(); });
     const delBtn = document.createElement("button");
-    delBtn.className = "btn danger small";
-    delBtn.textContent = "刪除";
+    delBtn.className = "btn danger small icon-btn";
+    delBtn.innerHTML = iconSvg("trash");
+    delBtn.title = "刪除"; delBtn.setAttribute("aria-label", "刪除");
     delBtn.addEventListener("click", ()=>{
       if(!confirm("確定要刪除「"+p.name+"」嗎？")) return;
       unlinkPartner(p);
@@ -1124,25 +1133,31 @@
     numberInput.hidden = true;
     head.appendChild(numberInput);
     const numberEditBtn = document.createElement("button");
-    numberEditBtn.className = "btn secondary small";
-    numberEditBtn.textContent = "修改場地名稱";
+    function setNumberEditIdle(){
+      numberEditBtn.className = "btn secondary small icon-btn";
+      numberEditBtn.innerHTML = iconSvg("pencil");
+      numberEditBtn.title = "修改場地名稱"; numberEditBtn.setAttribute("aria-label", "修改場地名稱");
+    }
     function confirmNumberEdit(){
       court.number = numberInput.value.trim() || court.number;
       numberText.textContent = court.number;
       numberInput.value = court.number;
       numberInput.hidden = true;
       numberText.hidden = false;
-      numberEditBtn.textContent = "修改場地名稱";
+      setNumberEditIdle();
       save();
       renderSchedule();
     }
+    setNumberEditIdle();
     numberEditBtn.addEventListener("click", ()=>{
       if(numberInput.hidden){
         numberText.hidden = true;
         numberInput.hidden = false;
         numberInput.focus();
         numberInput.select();
-        numberEditBtn.textContent = "確定";
+        numberEditBtn.className = "btn success small icon-btn";
+        numberEditBtn.innerHTML = iconSvg("check");
+        numberEditBtn.title = "確定"; numberEditBtn.setAttribute("aria-label", "確定");
       } else {
         confirmNumberEdit();
       }
@@ -1162,8 +1177,10 @@
       head.appendChild(tag);
     }
     const removeBtn = document.createElement("button");
-    removeBtn.className = "btn danger small";
-    removeBtn.textContent = court.retiring ? "取消移除" : "移除";
+    removeBtn.className = (court.retiring ? "btn secondary small icon-btn" : "btn danger small icon-btn") + " court-remove-btn";
+    removeBtn.innerHTML = iconSvg(court.retiring ? "undo" : "trash");
+    removeBtn.title = court.retiring ? "取消移除" : "移除";
+    removeBtn.setAttribute("aria-label", removeBtn.title);
     removeBtn.addEventListener("click", ()=> toggleCourtRemoval(index));
     head.appendChild(removeBtn);
     if(court.retiring && !m){

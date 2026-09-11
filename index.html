@@ -40,21 +40,20 @@
       <p class="muted">狀態操作：點一下「未報到／已報到」切換是否到場；「休息」「離場」是開關（亮＝啟用），啟用時該球員不會被排入對戰。</p>
       <div class="table-scroll">
         <table>
-          <thead><tr><th>姓名</th><th>程度</th><th>搭檔</th><th>已上場數</th><th>狀態</th><th>編輯</th></tr></thead>
+          <thead><tr><th>姓名</th><th>程度</th><th>搭檔</th><th>狀態</th><th>編輯</th></tr></thead>
           <tbody id="player-table-body"></tbody>
-          <tfoot>
-            <tr>
-              <td><input type="text" id="np-name" class="np-name-input" placeholder="姓名"></td>
-              <td><input type="number" id="np-skill" class="skill-input"></td>
-              <td><select id="np-partner"><option value="">— 無 —</option></select></td>
-              <td></td>
-              <td></td>
-              <td><button class="btn small" id="btn-add-player">新增球員</button></td>
-            </tr>
-          </tfoot>
         </table>
       </div>
-      <div class="empty" id="player-empty" style="display:none">還沒有球員，用下面最後一列新增吧。</div>
+      <div class="empty" id="player-empty" style="display:none">還沒有球員，用下面新增吧。</div>
+
+      <div class="add-player-row">
+        <input type="text" id="np-name" class="np-name-input" placeholder="姓名">
+        <input type="number" id="np-skill" class="skill-input" placeholder="程度">
+        <select id="np-partner"><option value="">無搭檔</option></select>
+        <button class="btn icon-btn round" id="btn-add-player" title="新增球員" aria-label="新增球員">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+        </button>
+      </div>
     </div>
 
     <div class="card">
